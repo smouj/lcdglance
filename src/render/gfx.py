@@ -1,6 +1,6 @@
-"""Graphics toolkit for drawing on a 160×43 1-bit canvas.
+"""Graphics toolkit for drawing on a 160x43 1-bit canvas.
 
-Provides: text, bars, sparklines, page chrome (title + dots + rule),
+Provides: text, bars, sparklines, page chrome (title + clock + dots + rule),
 and the canvas factory. Uses Pillow for text rendering with a LUT-based
 binarisation pass (never dithering).
 
@@ -10,6 +10,7 @@ Font hierarchy:
   - PIL default as ultimate fallback
 """
 import os
+import time
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -22,7 +23,7 @@ from ..util.text import ascii_text, clip
 
 
 class Gfx:
-    """Small drawing helpers on a 160×43 1-bit canvas."""
+    """Small drawing helpers on a 160x43 1-bit canvas."""
 
     def __init__(self):
         self.font = None
@@ -57,20 +58,72 @@ class Gfx:
             else:
                 d.point((cx + 1, 5), fill=255)
 
-    def frame(self, d, title, right="", dots=None):
-        """Shared page chrome: title, right context, rule, page dots."""
+    def _clock_str(self):
+        """Return HH:MM clock string for the current time."""
+        t = time.localtime()
+        return f"{t.tm_hour:2d}:{t.tm_min:02d}"
+
+    def frame(self, d, title, right="", dots=None, clock=True):
+        """Shared page chrome: title, clock, right context, rule, page dots.
+
+        Layout (160px wide, 12px header band):
+          [4px] TITLE ... [gap] ... HH:MM [gap] ... dots [4px]
+        The clock sits right-aligned in the space between title and dots,
+        with a 6px gap before the dots and a 6px gap after the title.
+        'right' text (e.g. uptime) is placed between title and clock.
+        """
         dots = dots if dots is not None else self.dots
         total = dots[1] if dots else 0
+
+        # --- Title (left-aligned at x=4) ---
         t = ascii_text(title)
         d.text((4, -1), t, font=self.font, fill=255)
-        tw = d.textlength(t, font=self.font)
+        tw = int(d.textlength(t, font=self.font))
+
+        # --- Horizontal rule ---
         d.line([(0, 12), (W - 1, 12)], fill=255)
+
+        # --- Page dots (right-aligned, top-right corner) ---
         self.page_dots(d, dots)
+
+        # --- Calculate the left edge of the dots block ---
+        if total:
+            dots_left = W - 6 - ((total - 1) * 3 + 3)
+        else:
+            dots_left = W - 2
+        dots_left = min(dots_left, W - 4)
+
+        # --- Right zone: gap between title end and dots start ---
+        # Title ends at tw+4 (4px left margin + title width)
+        title_end = tw + 4
+        # Available space for clock + right text: from title_end+6 to dots_left-6
+        zone_left = title_end + 6
+        zone_right = dots_left - 6
+
+        # --- Clock (small font, in the right zone) ---
+        # The clock is placed right-aligned within the zone,
+        # so it sits just left of the dots with a clean gap.
+        if clock:
+            clk = self._clock_str()
+            clk_w = int(d.textlength(clk, font=self.font_small))
+            clk_x = zone_right - clk_w
+            # Never overlap the title: minimum 6px gap
+            if clk_x < title_end + 6:
+                clk_x = title_end + 6
+            d.text((clk_x, 1), clk, font=self.font_small, fill=255)
+
+        # --- Right text (e.g. uptime) — placed between title and clock ---
         if right:
             r = ascii_text(right)
-            rw = d.textlength(r, font=self.font_small)
-            rx = (W - 10 - ((total - 1) * 3 + 3) - rw) if total else (W - 4 - rw)
-            if rx > tw + 6:
+            rw = int(d.textlength(r, font=self.font_small))
+            if clock:
+                # Place right text just left of the clock
+                clk = self._clock_str()
+                clk_w = int(d.textlength(clk, font=self.font_small))
+                rx = zone_right - clk_w - 6 - rw
+            else:
+                rx = zone_right - rw
+            if rx > title_end + 6:
                 d.text((rx, 0), r, font=self.font_small, fill=255)
 
     @staticmethod
