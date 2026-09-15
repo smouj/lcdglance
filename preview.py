@@ -1,12 +1,30 @@
 # -*- coding: utf-8 -*-
-"""Render every LCD page + all mascots the way the panel receives them."""
+"""Render every LCD page + all mascots the way the panel receives them (v9 modular)."""
 import sys, os, math, time
-sys.path.insert(0, r"C:\Users\VersusPc\lcdglance")
-import lcdglance as L
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from src.util.constants import W, H, RGB_STATE
+from src.util.text import clip, age_str, fmt_speed, fmt_bytes, fmt_uptime
+from src.render.bitmap import to_mono_bytes, mono_to_image
+from src.render.gfx import Gfx
+from src.mascots.mascot import MascotRenderer
+from src.mascots.sources import build_sources, pick_active, mood_for, load_index
+from src.pages.mascot import MascotPage
+from src.pages.sources import SourcesPage
+from src.pages.system import SystemPage
+from src.pages.network import NetworkPage
+from src.pages.procs import ProcsPage
+from src.pages.openclaw_page import OpenClawPage
+from src.pages.alerts import AlertsPage
+from src.pages.status import StatusPage
+from src.pages.download import DownloadPage
+from src.pages.vps_page import VPSPage
+from src.sources.system import NET_HIST
+
 from PIL import Image
 
-gfx = L.Gfx()
-mascot = L.MascotRenderer(gfx)
+gfx = Gfx()
+mascot = MascotRenderer(gfx)
 
 st = {"cpu": 37.4, "cpu_freq": 2600, "mem": 62.1, "mem_used": 9.9, "mem_total": 16.0,
       "disk": 71.3, "disk_used": 664.0, "disk_total": 931.0,
@@ -16,7 +34,8 @@ st = {"cpu": 37.4, "cpu_freq": 2600, "mem": 62.1, "mem_used": 9.9, "mem_total": 
               {"name": "openclaw-wsl", "cpu_percent": 8.0, "memory_percent": 3.0},
               {"name": "LCore", "cpu_percent": 0.5, "memory_percent": 1.0}],
       "procs": 190, "uptime": 45678}
-L.NET_HIST[:] = [abs(60 * math.sin(i / 5.0)) + 4 for i in range(60)]
+
+NET_HIST[:] = [abs(60 * math.sin(i / 5.0)) + 4 for i in range(60)]
 
 
 class FakeOC:
@@ -51,33 +70,36 @@ class FakeDL:
 
 
 oc, dl = FakeOC(), FakeDL()
-out = r"C:\Users\VersusPc\lcdglance\preview"
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview")
 os.makedirs(out, exist_ok=True)
 panels = []
 
 
 def emit(name, img):
-    data = L.to_mono_bytes(img)
-    back = L.mono_to_image(data)
-    back.resize((L.W * 4, L.H * 4), Image.NEAREST).save(os.path.join(out, name + ".png"))
+    data = to_mono_bytes(img)
+    back = mono_to_image(data)
+    back.resize((W * 4, H * 4), Image.NEAREST).save(os.path.join(out, name + ".png"))
     panels.append(name + ".png")
 
 
-sources = L.build_sources(st, oc, dl)
-active = L.pick_active(sources)
-power = L.load_index(st, oc, dl)
+sources = build_sources(st, oc, dl)
+active = pick_active(sources)
+power = load_index(st, oc, dl)
 gfx.dots = (0, 7)
 ctx = {"mascot": mascot, "sources": sources, "active_source": active,
-       "mood": L.mood_for(st, oc, dl, active), "load": power, "busy": True}
-for p in [L.MascotPage(), L.SourcesPage(), L.SystemPage(), L.NetworkPage(),
-          L.ProcsPage(), L.OpenClawPage(), L.AlertsPage(), L.DownloadPage(),
-          L.StatusPage()]:
+       "mood": mood_for(st, oc, dl, active), "load": power, "busy": True,
+       "vps_snapshot": {}, "hist_bufs": {"cpu": [], "ram": [], "disk": []},
+       "anim_state": 0}
+
+for p in [MascotPage(), SourcesPage(), SystemPage(), NetworkPage(),
+          ProcsPage(), OpenClawPage(), AlertsPage(), DownloadPage(),
+          StatusPage()]:
     img, d = gfx.canvas()
-    L.RGB_STATE["effect"] = "mascot"
+    RGB_STATE["effect"] = "mascot"
     p.render(gfx, d, st, oc, dl, ctx)
     emit("p_" + p.name.lower(), img)
 
-# every mascot x every mood, idle and busy
+# Every mascot x every mood, idle and busy
 for key in ("openclaw", "codex", "pc"):
     for mood in ("idle", "watch", "happy", "worried", "alarm", "focus"):
         img, d = gfx.canvas()
