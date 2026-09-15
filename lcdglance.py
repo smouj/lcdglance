@@ -1575,10 +1575,12 @@ class MascotPage(Page):
 
         gfx.page_dots(d)
 
-        # Header: source name + live clock on the right
+        # Header: source name (left) + live clock just left of the page dots.
+        # page_dots occupy x=135..155 (y=4..6), so the clock is anchored at x<130
+        # to leave a clear gap and never overlap the dots or the source label.
         gfx.text(d, (63, 0), src["label"])
         cw = d.textlength("00:00", font=gfx.font_small)
-        gfx.text(d, (156 - int(cw), 0), time.strftime("%H:%M"), small=True)
+        gfx.text(d, (128 - int(cw), 0), time.strftime("%H:%M"), small=True)
 
         # Mood indicator: small expression label above ground line
         mood_labels = {"idle": "---", "watch": "WATCH", "focus": "FOCUS",
@@ -1683,13 +1685,6 @@ class MascotPage(Page):
             gw = "GW UP" if s.get("online") else "GW DOWN"
             codex_state = "scanning" if s.get("codex_active") else "idle"
             gfx.text(d, (63, y), f"{gw}  {codex_state}", small=True)
-
-        # Connection indicator (top-right of mascot panel)
-        if src.get("online"):
-            d.rectangle([149, 4, 155, 9], fill=255)
-        else:
-            d.rectangle([149, 4, 155, 9], outline=255)
-            d.line([(150, 5), (154, 8)], fill=255)
 
         # Status line: arrow to active source if different, or BUSY/OK/OFF
         if src["key"] != active["key"]:
