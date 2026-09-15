@@ -19,7 +19,8 @@ LCDGlance convierte el LCD del G510 (monocromo, 1-bit) en un panel de control vi
 
 - **Tres fuentes vigiladas** — tu PC, el gateway OpenClaw y Codex — cada una con su
   propia mascota animada y su color RGB.
-- **Reloj en tiempo real** en la cabecera de las páginas principales.
+- **Reloj en tiempo real (HH:MM)** en la cabecera de *todas* las páginas, alineado a la
+  derecha y sin solapar el título ni el indicador de página.
 - **Auto-foco**: si un agente termina o empieza una descarga, el panel salta solo a la
   escena relevante y vuelve a tu página.
 - **7–8 páginas** de datos (ver abajo) + overlays de **Download** y **Overview**.
@@ -28,7 +29,8 @@ LCDGlance convierte el LCD del G510 (monocromo, 1-bit) en un panel de control vi
 
 ## Mascotas
 
-Cada fuente tiene su propio personaje dibujado a mano (no texto), con animaciones
+Cada fuente tiene su propio personaje **dibujado a mano** con primitivas vectoriales
+(no sprites pixel-art, que se pixelan mal en un panel 1-bit), con animaciones
 independientes:
 
 | Mascota | Fuente | Dibujo | Color RGB |
@@ -54,7 +56,7 @@ color tiñe el teclado RGB.
 
 | # | Página | Contenido | Captura |
 |---|---|---|---|
-| 1 | **Mascot** | mascota + panel detallado por fuente (B3 cicla fuente) | ![Mascot](docs/screens/mascot-claw.png) |
+| 1 | **Mascot** | mascota + panel detallado por fuente (B3 cambia de mascota) | ![Mascot](docs/screens/mascot-claw.png) |
 | 2 | **Sources** | PC / CLAW / CODEX con métricas, mini-mascotas y barras de actividad | ![Sources](docs/screens/sources.png) |
 | 3 | **System** | CPU / RAM / disco + temperatura + frecuencia + memoria + top proceso | ![System](docs/screens/system.png) |
 | 4 | **Network** | subida/bajada + pico + sparkline con escala | ![Network](docs/screens/network.png) |
@@ -90,8 +92,15 @@ Toque corto vs. **mantener pulsado** (~0,6 s) — cada botón tiene dos funcione
 |---|---|---|
 | **B1** | Página anterior | Saltar a la 1ª página |
 | **B2** | Página siguiente | Saltar a la última página |
-| **B3** | Ciclar fuente (en Mascot) · overview 8 s (otras páginas) | Overview + refresco forzado de OpenClaw (10 s) |
+| **B3** | **Cambiar de mascota**: salta a Mascot y cicla AUTO → PC → CLAW → CODEX | Scouter (plano de poder, temperaturas, gateway) 8 s |
 | **B4** | Flash blanco + toggle alerta RGB | Toggle atenuación nocturna RGB |
+| **B1+B2** | Avance rápido de página | — |
+| **B3+B4** | — | Menú rápido de acciones |
+
+**B3 — cambiar de mascota.** Cada pulsación avanza a la siguiente mascota y muestra un
+aviso breve (`MASCOT PC`, `MASCOT CLAW`, `MASCOT CODEX`, `MASCOT AUTO`). En `AUTO` el panel
+elige solo la mascota de la fuente ocupada. El color RGB del teclado sigue a la mascota
+seleccionada.
 
 **Auto-foco** — sin tocar nada:
 
@@ -141,7 +150,8 @@ alerta manual > agente falló > agente OK > descarga > agentes activos
 ## Ficheros
 
 ```
-lcdglance.py         aplicación principal
+lcdglance.py         aplicación principal (arranque + bucle principal)
+verify.py            autocomprobación: render de todas las páginas sin solapes
 launch_detached.py   lanzador desacoplado (pythonw + DETACHED_PROCESS)
 configure.py         normaliza la config de applets de LGS
 configure_keys.py    configuración de colores RGB por tecla
@@ -150,7 +160,28 @@ vps_config.json      configuración del VPS remoto (opcional)
 start_lcdglance.vbs  auto-arranque (copiar a Startup)
 restart.bat          reinicia la aplicación
 restart_lgs.bat      reinicia LGS + la aplicación
+
+src/
+  hardware/  lcd.py, led.py            controladores de las DLLs de Logitech
+  sources/   system, openclaw,          recogida de datos (hilos aparte)
+             download, vps
+  render/    gfx.py, bitmap.py,        lienzo 1-bit, binarización LUT, fuente
+             bitmap_font.py            bitmap nativa (disponible, no cableada)
+  anim/      controller, scene,         máquina de estados, escenas,
+             transition, toast         transiciones, avisos
+  mascots/   mascot.py, sprites.py      mascotas procedurales (+ sprites opt-in),
+             interactions, sources     escenas compartidas, lógica de fuentes
+  pages/     una por pantalla           Mascot, Sources, System, Network,
+                                        Procs, OpenClaw, Alerts, VPS,
+                                        Download, Status, Screensaver, QuickMenu
+  ui/        buttons, rgb, applets      botones, motor RGB, limpieza de applets
+  util/      constants, text, ringbuf   ajustes, helpers de texto, historial
 ```
+
+> Las mascotas se dibujan **proceduralmente** (primitivas de Pillow). Existe un
+> renderizador de sprites pixel-art (`src/mascots/sprites.py`) desactivado por defecto
+> con `USE_SPRITES = False` en `src/util/constants.py`: en el panel real se veía peor.
+> Actívalo solo si quieres experimentar.
 
 ---
 

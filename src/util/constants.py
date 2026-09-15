@@ -72,6 +72,13 @@ MASCOT_NAME  = {"pc": "PC", "openclaw": "CLAW", "codex": "CODEX"}
 INVERT        = False    # True → swap lit/unlit pixels
 BIN_THRESHOLD = 120      # luminance cutoff: 128 loses strokes, 100 merges 'm'
 
+# Sprite mascots (pixel-art bitmaps in mascots/sprites.py) are OPT-IN.
+# On the real G510 panel the hand-drawn procedural mascots read better:
+# sprites alias badly at 1-bit on a 160x43 mono display. The sprite path
+# stays available behind this flag and MascotRenderer falls back to the
+# procedural renderer whenever sprites are off or lack a key+mood.
+USE_SPRITES   = False
+
 # ─── Download directories to watch ─────────────────────────────────
 DL_DIRS = [
     os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"),

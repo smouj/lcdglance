@@ -4,9 +4,11 @@ Each mascot sprite is stored as a list of row strings where '#' is a lit pixel
 and '.' is dark. The SpriteSet converts these to bytes on demand and caches
 them. Sprites are blitted directly onto the PIL draw surface — no binarisation.
 
-For v9.1, the procedural MascotRenderer is the primary renderer. Sprites are
-an optional overlay that, when present, take precedence. The sprite data for
-OpenClaw, Codex, and PC is hand-designed for the 160×43 LCD at ~30px size.
+OPT-IN: this renderer is disabled by default (constants.USE_SPRITES = False).
+The hand-drawn procedural mascots in mascot.py read better on the real 1-bit
+panel, where pixel-art sprites alias badly at ~30px. When enabled, SpriteSet
+takes precedence and MascotRenderer falls back to procedural for any key+mood
+that has no sprite. Sprite data is hand-designed for the 160x43 LCD.
 """
 import time
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LCDGlance v9.0 — Logitech G510 (160×43 mono LCD), modular edition.
+LCDGlance v9.1 — Logitech G510 (160×43 mono LCD), modular edition.
 
 Architecture:
   src/          Package with all subsystems
@@ -13,8 +13,8 @@ Architecture:
     ui/         ButtonHandler, RGBEngine, applet killer
     util/       Constants, text helpers, RingBuffer
 
-New in v9.0:
-  - Modular package structure (was single 2062-line file)
+New in v9:
+  - Modular package structure (was a single 2062-line file)
   - AnimationController: state machine for mascot expressions + dynamic FPS
   - SceneDirector: page selection, auto-focus, overrides, transitions
   - TransitionEngine: slide/wipe/dissolve between pages
@@ -22,12 +22,15 @@ New in v9.0:
   - ButtonHandler: tap, hold (0.5s), and combo detection (B1+B2, B3+B4)
   - RingBuffer: thread-safe history for CPU/RAM/disk/net sparklines
   - Dynamic FPS: 4 idle, 8 animated, 12 busy, 24 transitions
-  - Native bitmap font (5×8 body, 3×5 micro) with icon glyphs
-  - Sprite-based mascot rendering with procedural fallback
-  - Mascot interactions (two characters in shared scenes)
+  - Live HH:MM clock in the header of every page (never overlaps content)
+  - B3 cycles the featured mascot (AUTO -> PC -> CLAW -> CODEX)
   - Screensaver page (clock + sleeping mascot after 90s idle)
   - Quick menu page (B3+B4 hold combo for context actions)
   - All v7.1 functionality preserved with zero regression
+
+Mascot rendering is PROCEDURAL (hand-drawn with Pillow primitives). An
+optional sprite renderer exists behind constants.USE_SPRITES; it is off
+because pixel-art aliases badly on the real 1-bit panel.
 """
 
 import threading
@@ -50,13 +53,12 @@ from src.util.constants import (
     W, H, BITMAP_SIZE, LOOP_INTERVAL, RENDER_MIN_GAP,
     RESUBMIT_AFTER, LCD_RECONNECT, OC_POLL_INTERVAL, DL_POLL_INTERVAL,
     APP_KILL_INTERVAL, FPS_IDLE, FPS_ANIMATED, FPS_BUSY, FPS_TRANSITION,
-    BTN_1, BTN_2, BTN_3, BTN_4,
+    BTN_1, BTN_2, BTN_3, BTN_4, USE_SPRITES,
 )
 from src.util.text import ascii_text, clip, fmt_speed, fmt_bytes, fmt_uptime, age_str
 from src.util.ringbuf import RingBuffer
 from src.render.bitmap import to_mono_bytes, mono_to_image
 from src.render.gfx import Gfx
-from src.render.bitmap_font import font_body, font_micro, BitmapFont
 from src.hardware.lcd import LCDController
 from src.hardware.led import LEDController
 from src.sources.system import (
@@ -111,7 +113,8 @@ class LCDGlance:
 
         # Rendering
         self.gfx = Gfx()
-        self.sprites = None  # Disabled: procedural mascots look better on real LCD
+        # Sprites are opt-in (constants.USE_SPRITES); procedural reads better.
+        self.sprites = create_default_sprites() if USE_SPRITES else None
         self.mascot = MascotRenderer(self.gfx, sprites=self.sprites)
 
         # Animation engine
@@ -153,7 +156,7 @@ class LCDGlance:
 
     # ---- lifecycle
     def start(self):
-        print("LCDGlance v9.0 — G510 mascots + RGB + animations + sprites", flush=True)
+        print("LCDGlance v9.1 — G510 mascots + RGB + animations + clock", flush=True)
         print("=" * 60, flush=True)
 
         if not HAS_PIL:
@@ -179,7 +182,7 @@ class LCDGlance:
         self.running = True
         print(f"Pages: {[p.name for p in self.pages]}", flush=True)
         print("B1/B2 pages  B3 mascot  B3-hold scouter  B4 flash  B3+B4 menu  B1+B2 cycle", flush=True)
-        print("Animations: controller + scene director + transitions + toasts + sprites", flush=True)
+        print("Animations: controller + scene director + transitions + toasts", flush=True)
         if self.vps.enabled:
             print(f"VPS: {self.vps.user}@{self.vps.host} (poll {self.vps.poll_interval}s)", flush=True)
         else:
@@ -204,9 +207,9 @@ class LCDGlance:
         """Show a startup splash screen for 2 seconds."""
         img, d = self.gfx.canvas()
         self.mascot.draw(d, "openclaw", 28, 21, "happy")
-        self.gfx.text(d, (56, 6), "LCDGlance v9")
+        self.gfx.text(d, (56, 6), "LCDGlance v9.1")
         self.gfx.text(d, (56, 20), "PC / CLAW / CODEX", small=True)
-        self.gfx.text(d, (56, 31), "sprites + toasts", small=True)
+        self.gfx.text(d, (56, 31), "mascots + clock", small=True)
         if self.lcd.connected:
             self.lcd.submit(to_mono_bytes(img))
             self.lcd.update()
