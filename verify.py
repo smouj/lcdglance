@@ -30,7 +30,7 @@ from src.render.bitmap import to_mono_bytes
 from src.mascots.mascot import MascotRenderer
 from src.mascots.sources import build_sources, pick_active, mood_for
 from src.sources.system import NET_HIST
-from src.pages.mascot import MascotPage
+from src.pages.mascot import MascotPage, _usage_text
 from src.pages.sources import SourcesPage
 from src.pages.system import SystemPage
 from src.pages.network import NetworkPage
@@ -50,6 +50,12 @@ class _OC:
         self.alerts = [(time.time() - 120, "ok", "DONE: SysGlance")]
         self.active_agents = {}; self.codex_seen = True; self.codex_active = False
         self.codex_mtime = time.time() - 600; self.codex_last = "session.jsonl"
+        # model + quota (as parsed from the lcd-probe M|/U| lines)
+        self.model = "deepseek/deepseek-flash"
+        self.usage_provider = "deepseek"
+        self.usage_balance = "$4.02"
+        self.usage_window_label = ""
+        self.usage_window_pct = ""
     def snapshot(self):
         return dict(self.__dict__)
 
@@ -171,6 +177,23 @@ def main():
         ok = len(runs) >= 2 and (runs[-1][0] - runs[-2][1]) >= 2
         check(f"Mascot/{key}: clock clear of dots", ok,
               f"runs={runs}", v)
+
+    # 5b — Mascot page: model + usage render on their own lines, right column
+    gfx.dots = (0, len(pages))
+    ctx = {"mascot": mascot, "sources": sources, "active_source": by_key["openclaw"],
+           "mood": "idle", "load": 12345, "busy": False, "vps_snapshot": {},
+           "hist_bufs": {"cpu": [], "ram": [], "disk": []},
+           "anim_state": 0, "interaction": None, "interaction_trigger": None}
+    im, dr = Gfx.canvas()
+    MascotPage().render(gfx, dr, STATS, oc, dl, ctx)
+    pxs = im.load()
+    def _row_ink(y0, y1, x0=63):
+        return any(pxs[x, y] > 127 for x in range(x0, W) for y in range(y0, y1))
+    check("Mascot: model line present (y=22..31)", _row_ink(22, 31), "", v)
+    check("Mascot: usage line present (y=32..41)", _row_ink(32, 41), "", v)
+    check("Mascot: quota text mentions left/balance",
+          "left" in _usage_text(oc.snapshot()) or oc.snapshot().get("usage_balance"),
+          _usage_text(oc.snapshot()), v)
 
     # 6 — mascots are distinct and non-blank
     seen = {}

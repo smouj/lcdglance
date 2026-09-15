@@ -26,6 +26,12 @@ class OpenClawMonitor:
         self.codex_active = False
         self.codex_mtime = 0.0
         self.codex_last = ""
+        # Model in use + quota (from the lcd-probe M|/U| lines)
+        self.model = ""
+        self.usage_provider = ""
+        self.usage_balance = ""
+        self.usage_window_label = ""
+        self.usage_window_pct = ""
         self._load_seen()
 
     def _load_seen(self):
@@ -56,6 +62,8 @@ class OpenClawMonitor:
             active_agents = {}
             codex_mtime = 0.0
             codex_last = ""
+            model = ""
+            u_prov = u_bal = u_wlab = u_wpct = ""
 
             for line in out.splitlines():
                 line = line.strip()
@@ -95,6 +103,14 @@ class OpenClawMonitor:
                         new_alerts.append((now, kind, text))
                         if rt == "subagent" or not good:
                             new_events.append((now, kind, text))
+                elif line.startswith("M|"):
+                    model = line[2:].strip()
+                elif line.startswith("U|"):
+                    p = line.split("|", 4)
+                    u_prov = p[1].strip() if len(p) > 1 else ""
+                    u_bal = p[2].strip() if len(p) > 2 else ""
+                    u_wlab = p[3].strip() if len(p) > 3 else ""
+                    u_wpct = p[4].strip() if len(p) > 4 else ""
                 elif line.startswith("C2|"):
                     p = line.split("|", 2)
                     try:
@@ -122,6 +138,11 @@ class OpenClawMonitor:
                 self.codex_mtime = codex_mtime
                 self.codex_last = codex_last
                 self.codex_active = bool(codex_mtime) and (now - codex_mtime) < 180
+                self.model = model
+                self.usage_provider = u_prov
+                self.usage_balance = u_bal
+                self.usage_window_label = u_wlab
+                self.usage_window_pct = u_wpct
                 if not self._baselined:
                     self._baselined = True
                     self.alerts.append((now, "info", "OpenClaw link up"))
@@ -150,4 +171,9 @@ class OpenClawMonitor:
                 "codex_active": self.codex_active,
                 "codex_mtime": self.codex_mtime,
                 "codex_last": self.codex_last,
+                "model": self.model,
+                "usage_provider": self.usage_provider,
+                "usage_balance": self.usage_balance,
+                "usage_window_label": self.usage_window_label,
+                "usage_window_pct": self.usage_window_pct,
             }
