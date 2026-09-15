@@ -1198,19 +1198,6 @@ class Gfx:
             else:
                 d.point((cx + 1, 5), fill=255)
 
-    @staticmethod
-    def clock(d, xy=(46, 0), seconds=False):
-        """Draw the current time, top-left corner area.
-
-        Cheap: `time.strftime` is a single libc call. Renders HH:MM (or HH:MM:SS
-        when seconds=True). The minute changes once per 60 s, so even the slow
-        STATIC_INTERVAL pages (0.8 s) stay accurate to the minute.
-        """
-        fmt = "%H:%M:%S" if seconds else "%H:%M"
-        t = time.strftime(fmt)
-        d.text(xy, t, font=ImageFont.load_default(), fill=255)
-        return t
-
     def frame(self, d, title, right="", dots=None):
         """Shared page chrome: 11 px title, right context, 1 px rule, page balls.
 
@@ -1588,9 +1575,6 @@ class MascotPage(Page):
 
         gfx.page_dots(d)
 
-        # Live clock (top-left, above the mascot column)
-        gfx.clock(d, (2, 0))
-
         # Header: source name + live clock on the right
         gfx.text(d, (63, 0), src["label"])
         cw = d.textlength("00:00", font=gfx.font_small)
@@ -1723,8 +1707,7 @@ class SourcesPage(Page):
     def render(self, gfx, d, st, oc, dl, ctx):
         srcs = ctx["sources"]
         n_up = sum(1 for s in srcs if s["online"])
-        gfx.frame(d, "SOURCES", f"{n_up}/{len(srcs)} up")
-        gfx.clock(d, (3, 0))
+        gfx.frame(d, "SOURCES", f"{n_up}/{len(srcs)} up {time.strftime('%H:%M')}")
         mascot = ctx["mascot"]
         s = oc.snapshot()
 
