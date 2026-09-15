@@ -10,19 +10,19 @@ LCD is rendered as real graphics with Pillow (not just text):
 
 Pages (B1/B2):
   1 Mascot    active mascot + detailed source stats (B3 cycles source)
-  2 Sources   all sources with power levels + status
+  2 Sources   all sources with status
   3 System    CPU/RAM/disk bars + temp + top process
   4 Network   up/down speed + sparkline
   5 Procs     top processes by CPU
   6 OpenClaw  agent types + tasks + gateway status
-  7 Alerts    scouter-style PL + system alerts
+  7 Alerts    system + agent alert feed
   8 VPS       remote server SSH stats (if configured)
   * Download  appears automatically while downloading
 
 Buttons:
   B1/B2  Previous/Next page
   B3     On mascot page: cycle displayed source (PC/CLAW/CODEX)
-         On other pages: full scouter overlay (8 s)
+         On other pages: full overview overlay (8 s)
   B4     Flash + toggle manual RGB alert
 
 RGB (whole-keyboard, LGS 8.57 LED SDK):
@@ -1198,6 +1198,19 @@ class Gfx:
             else:
                 d.point((cx + 1, 5), fill=255)
 
+    @staticmethod
+    def clock(d, xy=(46, 0), seconds=False):
+        """Draw the current time, top-left corner area.
+
+        Cheap: `time.strftime` is a single libc call. Renders HH:MM (or HH:MM:SS
+        when seconds=True). The minute changes once per 60 s, so even the slow
+        STATIC_INTERVAL pages (0.8 s) stay accurate to the minute.
+        """
+        fmt = "%H:%M:%S" if seconds else "%H:%M"
+        t = time.strftime(fmt)
+        d.text(xy, t, font=ImageFont.load_default(), fill=255)
+        return t
+
     def frame(self, d, title, right="", dots=None):
         """Shared page chrome: 11 px title, right context, 1 px rule, page balls.
 
@@ -1351,24 +1364,6 @@ def mood_for(st, oc, dl, src):
     if cpu > 90 or mem > 90 or st.get("disk", 0) > 95:
         return "worried"
     return "idle"
-
-
-def load_index(st, oc, dl):
-    """A single 'load index' derived from real machine and agent activity.
-
-    Purely presentational: it folds CPU/RAM/disk/network plus running agents into
-    one number, so a busy machine visibly reads higher.
-    """
-    s = oc.snapshot()
-    pl = 1000.0
-    pl += (st.get("cpu", 0) or 0) * 42
-    pl += (st.get("mem", 0) or 0) * 26
-    pl += (st.get("disk", 0) or 0) * 6
-    pl += min((st.get("net_dn", 0) or 0) * 3, 2000)
-    pl += sum((s.get("active_agents") or {}).values()) * 4500
-    if dl.active:
-        pl += min((dl.snapshot().get("speed") or 0) * 2500, 6000)
-    return int(pl)
 
 
 def is_busy(st, oc, dl, src):
@@ -1571,7 +1566,6 @@ class MascotPage(Page):
       PC:     CPU%, RAM%, disk, temp, uptime
       CLAW:   running/ok/fail agents, gateway status, last task
       CODEX:  activity status, last session age
-    A power-level (PL) readout gives an at-a-glance activity metric.
     B3 tap on this page cycles the displayed source; the auto-selected source
     is still used for RGB and override behaviour.
     """
@@ -1594,12 +1588,13 @@ class MascotPage(Page):
 
         gfx.page_dots(d)
 
-        # Header: source name + PL (power level)
-        pl = ctx.get("load", 0)
+        # Live clock (top-left, above the mascot column)
+        gfx.clock(d, (2, 0))
+
+        # Header: source name + live clock on the right
         gfx.text(d, (63, 0), src["label"])
-        pl_str = f"PL {pl:,}"
-        pw = d.textlength(pl_str, font=gfx.font_small)
-        gfx.text(d, (155 - int(pw), 0), pl_str, small=True)
+        cw = d.textlength("00:00", font=gfx.font_small)
+        gfx.text(d, (156 - int(cw), 0), time.strftime("%H:%M"), small=True)
 
         # Mood indicator: small expression label above ground line
         mood_labels = {"idle": "---", "watch": "WATCH", "focus": "FOCUS",
@@ -1721,7 +1716,7 @@ class MascotPage(Page):
 
 
 class SourcesPage(Page):
-    """Source overview: mini mascots, PL, detail, and activity bars."""
+    """Source overview: mini mascots, metric, status, and activity bars."""
 
     name = "Sources"
 
@@ -1729,34 +1724,34 @@ class SourcesPage(Page):
         srcs = ctx["sources"]
         n_up = sum(1 for s in srcs if s["online"])
         gfx.frame(d, "SOURCES", f"{n_up}/{len(srcs)} up")
+        gfx.clock(d, (3, 0))
         mascot = ctx["mascot"]
-        # Calculate per-source power levels
         s = oc.snapshot()
-        pl_pc = int(1000 + st.get("cpu", 0) * 42 + st.get("mem", 0) * 26)
-        pl_claw = int(1000 + sum((s.get("active_agents") or {}).values()) * 4500)
-        pl_codex = int(1000 + 3000) if s.get("codex_active") else int(1000)
-        pls = {"pc": pl_pc, "openclaw": pl_claw, "codex": pl_codex}
 
         for i, src in enumerate(srcs):
             x0 = 2 + i * 53
             cx = x0 + 26
             # Mini mascot
             mascot.draw_mini(d, src["key"], cx, 17, src["busy"])
-            # Name + power level on same line
+            # Name centered, metric + status below
             w = d.textlength(src["label"], font=gfx.font_small)
             gfx.text(d, (int(cx - w / 2), 27), src["label"], small=True)
-            # Power level
-            pl_val = pls.get(src["key"], 1000)
-            gfx.text(d, (x0 + 1, 35), f"PL{pl_val:,}", small=True)
-            # Detail line: one key metric per source
+            # Left metric per source (CPU%, agents, codex age)
             if src["key"] == "pc":
-                gfx.text(d, (x0 + 25, 35), f"{st.get('cpu', 0):.0f}%", small=True)
+                gfx.text(d, (x0 + 1, 35), f"{st.get('cpu', 0):.0f}%", small=True)
             elif src["key"] == "openclaw":
                 n_ag = sum((s.get("active_agents") or {}).values())
-                gfx.text(d, (x0 + 25, 35), f"AG{n_ag}", small=True)
+                gfx.text(d, (x0 + 1, 35), f"AG{n_ag}", small=True)
             else:
                 age = age_str(s.get("codex_mtime", 0)) if s.get("codex_seen") else "--"
-                gfx.text(d, (x0 + 25, 35), age, small=True)
+                gfx.text(d, (x0 + 1, 35), age, small=True)
+            # Status word on the right (RUN/OK/OFF)
+            if src["busy"]:
+                gfx.text(d, (x0 + 28, 35), "RUN", small=True)
+            elif src["online"]:
+                gfx.text(d, (x0 + 26, 35), "OK", small=True)
+            else:
+                gfx.text(d, (x0 + 25, 35), "OFF", small=True)
             # Activity bar at bottom
             bar_y = 42
             bar_w = 49
@@ -1916,7 +1911,7 @@ class OpenClawPage(Page):
 
 
 class AlertsPage(Page):
-    """Scouter-style alerts: power level readout + system and agent alerts."""
+    """Alert feed: system and agent alerts with severity icons."""
 
     name = "Alerts"
 
@@ -1933,19 +1928,14 @@ class AlertsPage(Page):
         for ts, kind, text in s["alerts"][-6:]:
             items.append((ts, kind, text))
 
-        # Power level in header right
-        pl = ctx.get("load", 0)
-        pl_label = f"PL {pl:,}"
-
         if not items:
-            gfx.frame(d, "ALERTS", f"clear  {pl_label}")
+            gfx.frame(d, "ALERTS", "clear")
             gfx.text(d, (3, 15), "all systems ok", small=True)
             n_agents = sum((s.get("active_agents") or {}).values())
             gfx.text(d, (3, 25), f"agents {s['ok']} ok {s['fail']} fail  AG{n_agents}", small=True)
             return
 
-        # Scouter readout style: PL prominently displayed
-        gfx.frame(d, f"ALERTS ({len(items)})", pl_label)
+        gfx.frame(d, f"ALERTS ({len(items)})", time.strftime("%H:%M"))
         y = 13
         for ts, kind, text in items[-3:]:
             _alert_icon(d, 2, y + 1, kind)
@@ -1954,16 +1944,16 @@ class AlertsPage(Page):
 
 
 class StatusPage(Page):
-    """B3 scouter: power level + CPU temp + gateway + active agents.
+    """B3 overview: CPU/RAM/disk, temp/freq, gateway, agents, Codex, network.
 
-    Shows for 5 seconds then returns to the current page (B3 timeout).
+    Shows for 8 seconds then returns to the current page.
     """
 
     name = "Status"
 
     def render(self, gfx, d, st, oc, dl, ctx):
         s = oc.snapshot()
-        gfx.frame(d, "SCOUTER", f"PL {ctx.get('load', 0):,}")
+        gfx.frame(d, "OVERVIEW", time.strftime("%H:%M"))
         y = 13
         # CPU / RAM / DSK bars
         for label, pct in (("CPU", st.get("cpu", 0)),
@@ -2114,7 +2104,7 @@ class LCDGlance:
 
     # ---- lifecycle
     def start(self):
-        print("LCDGlance v8.0 — interactive scouter + rich dashboard", flush=True)
+        print("LCDGlance v8.0 — live clock + rich dashboard", flush=True)
         print("=" * 60, flush=True)
 
         if not HAS_PIL:
@@ -2138,7 +2128,7 @@ class LCDGlance:
 
         self.running = True
         print(f"Pages: {[p.name for p in self.pages]}", flush=True)
-        print("B1/B2 pages  B3 cycle/scouter  B4 flash/alert", flush=True)
+        print("B1/B2 pages  B3 cycle/overview  B4 flash/alert", flush=True)
         if self.vps.enabled:
             print(f"VPS: {self.vps.user}@{self.vps.host} (poll {self.vps.poll_interval}s)", flush=True)
         else:
@@ -2263,7 +2253,6 @@ class LCDGlance:
                 active = pick_active(sources)
                 # computed every tick: the RGB engine needs it even on frames the
                 # render gate skips, and it is cheap (both snapshots are cached)
-                load = load_index(st, self.oc, self.dl)
                 busy = is_busy(st, self.oc, self.dl, active)
                 if self.rgb:
                     self.rgb.active_source_key = active["key"]
@@ -2303,7 +2292,7 @@ class LCDGlance:
                                "active_source": active,
                                "display_source": display,
                                "mood": mood_for(st, self.oc, self.dl, active),
-                               "load": load, "busy": busy,
+                               "busy": busy,
                                "vps_snapshot": self.vps.snapshot()}
                         img, d = self.gfx.canvas()
                         page.render(self.gfx, d, st, self.oc, self.dl, ctx)
@@ -2331,8 +2320,8 @@ class LCDGlance:
         """Button matrix with tap vs long-press (hold) semantics.
 
         B1: prev page          B2: next page          (hold B1/B2 = fast-scroll)
-        B3 tap:  cycle source (mascot page) / scouter overlay (other pages)
-        B3 hold: scouter overlay + refresh (always)
+        B3 tap:  cycle source (mascot page) / overview overlay (other pages)
+        B3 hold: overview overlay + refresh (always)
         B4 tap:  white flash + toggle manual RGB alert
         B4 hold: toggle night-dim (dim RGB lighting)
         """
@@ -2381,7 +2370,7 @@ class LCDGlance:
                 except (ValueError, AttributeError):
                     idx = 0
                 self._display_source = src_keys[idx % len(src_keys)]
-            else:                # other pages -> scouter overlay
+            else:                # other pages -> overview overlay
                 threading.Thread(target=self._safe_poll, daemon=True).start()
                 self.status_until = time.time() + 8.0
         elif btn == BTN_4:
@@ -2400,7 +2389,7 @@ class LCDGlance:
             # hold next = jump to last page
             self.page = len(self.pages) - 1
         elif btn == BTN_3:
-            # hold = scouter + forced refresh (always)
+            # hold = overview + forced refresh (always)
             threading.Thread(target=self._safe_poll, daemon=True).start()
             self.status_until = time.time() + 10.0
         elif btn == BTN_4:

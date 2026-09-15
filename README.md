@@ -4,7 +4,7 @@
 160×43** y la **iluminación RGB** del teclado Logitech **G510**, sobre Logitech Gaming
 Software (LGS 8.57).
 
-> Una pantalla retro sci-fi con nivel de poder (PL), scouter interactivo y tres
+> Una pantalla retro sci-fi con reloj en tiempo real, vista general (overview) y tres
 > mascotas pixel-art dibujadas a mano — una por cada fuente que vigila.
 
 ![Mascotas: PC, CLAW, CODEX](docs/screens/hero-mascots.png)
@@ -19,11 +19,10 @@ LCDGlance convierte el LCD del G510 (monocromo, 1-bit) en un panel de control vi
 
 - **Tres fuentes vigiladas** — tu PC, el gateway OpenClaw y Codex — cada una con su
   propia mascota animada y su color RGB.
-- **Nivel de poder (PL)** estilo *scouter* que sintetiza CPU, RAM, agentes activos y
-  descargas en un único número.
+- **Reloj en tiempo real** en la cabecera de las páginas principales.
 - **Auto-foco**: si un agente termina o empieza una descarga, el panel salta solo a la
   escena relevante y vuelve a tu página.
-- **7–8 páginas** de datos (ver abajo) + overlay de **Download** y **Scouter**.
+- **7–8 páginas** de datos (ver abajo) + overlays de **Download** y **Overview**.
 
 ---
 
@@ -56,15 +55,15 @@ color tiñe el teclado RGB.
 | # | Página | Contenido | Captura |
 |---|---|---|---|
 | 1 | **Mascot** | mascota + panel detallado por fuente (B3 cicla fuente) | ![Mascot](docs/screens/mascot-claw.png) |
-| 2 | **Sources** | PC / CLAW / CODEX con PL, mini-mascotas y barras de actividad | ![Sources](docs/screens/sources.png) |
+| 2 | **Sources** | PC / CLAW / CODEX con métricas, mini-mascotas y barras de actividad | ![Sources](docs/screens/sources.png) |
 | 3 | **System** | CPU / RAM / disco + temperatura + frecuencia + memoria + top proceso | ![System](docs/screens/system.png) |
 | 4 | **Network** | subida/bajada + pico + sparkline con escala | ![Network](docs/screens/network.png) |
 | 5 | **Procs** | procesos top por CPU y memoria | ![Procs](docs/screens/procs.png) |
 | 6 | **OpenClaw** | tipos de agentes + gateway + ratio ok/fail + último trabajo | ![OpenClaw](docs/screens/openclaw.png) |
-| 7 | **Alerts** | scouter con PL + alertas de sistema y agentes | ![Alerts](docs/screens/alerts-clear.png) |
+| 7 | **Alerts** | alertas de sistema y agentes con iconos de severidad | ![Alerts](docs/screens/alerts-clear.png) |
 | 8 | **VPS** | servidor remoto SSH (si se configura `vps_config.json`) | ![VPS](docs/screens/vps.png) |
 | ★ | **Download** | aparece **solo** con una descarga real | ![Download](docs/screens/download.png) |
-| ◈ | **Scouter** | overlay completo (B3) | ![Scouter](docs/screens/scouter.png) |
+| ◈ | **Overview** | vista general completa (B3) | ![Overview](docs/screens/overview.png) |
 
 ### Alertas activas
 
@@ -73,13 +72,13 @@ severidad:
 
 ![Alertas activas](docs/screens/alerts-active.png)
 
-### Scouter (B3)
+### Overview (B3)
 
-El **scouter** es un overlay a pantalla completa con lectura tipo Dragon Ball:
-nivel de poder (PL), barras CPU/RAM/disco, temperatura, frecuencia, gateway, agentes
-activos, Codex y velocidad de red.
+El **overview** es un overlay a pantalla completa con lectura de sistema:
+barras CPU/RAM/disco, temperatura, frecuencia, gateway, agentes activos, Codex y
+velocidad de red.
 
-![Scouter](docs/screens/scouter.png)
+![Overview](docs/screens/overview.png)
 
 ---
 
@@ -91,7 +90,7 @@ Toque corto vs. **mantener pulsado** (~0,6 s) — cada botón tiene dos funcione
 |---|---|---|
 | **B1** | Página anterior | Saltar a la 1ª página |
 | **B2** | Página siguiente | Saltar a la última página |
-| **B3** | Ciclar fuente (en Mascot) · scouter 8 s (otras páginas) | Scouter + refresco forzado de OpenClaw (10 s) |
+| **B3** | Ciclar fuente (en Mascot) · overview 8 s (otras páginas) | Overview + refresco forzado de OpenClaw (10 s) |
 | **B4** | Flash blanco + toggle alerta RGB | Toggle atenuación nocturna RGB |
 
 **Auto-foco** — sin tocar nada:
@@ -252,5 +251,5 @@ asíncrono y **no bloquea** el bucle principal.
 
 ## Licencia
 
-Código y arte propios. Las mascotas y el estilo scouter son un homenaje retro; úsalos
+Código y arte propios. Las mascotas y el estilo overview son un homenaje retro; úsalos
 como quieras en tus despliegues.
