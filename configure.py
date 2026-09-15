@@ -10,11 +10,14 @@ Run with LGS stopped: LGS rewrites settings.json on exit.
 """
 import json, os, shutil, subprocess, sys, time
 
-BASE = r"C:\Users\VersusPc\AppData\Local\Logitech\Logitech Gaming Software"
+import os
+
+# Standard LGS paths (works for most installations)
+BASE = os.path.join(os.environ.get("LOCALAPPDATA", r"C:\Users\Default\AppData\Local"), r"Logitech\Logitech Gaming Software")
 SETTINGS = os.path.join(BASE, "settings.json")
 BACKUP = os.path.join(BASE, "settings.json.lcdglance-preconfig")
 LGS_EXE = r"C:\Program Files\Logitech Gaming Software\LCore.exe"
-LAUNCHER = r"C:\Users\VersusPc\lcdglance\launch_detached.py"
+LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "launch_detached.py")
 CREATE_NO_WINDOW = 0x08000000
 
 KEEP_NAME = "LCDGlance"

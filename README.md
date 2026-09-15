@@ -34,7 +34,7 @@ independientes:
 | Mascota | Fuente | Dibujo | Color RGB |
 |---|---|---|---|
 | **CLAW** | OpenClaw | cangrejo: caparazón, pinzas, patas, ojos en tallos | cian |
-| **CODEX** | Codex (`~/.codex`) | robot: antena con LED, visor con escáner, boca de rejilla | verde |
+| **CODEX** | Codex (opcional) | robot: antena con LED, visor con escáner, boca de rejilla | verde |
 | **PC** | tu equipo | monitor con cara y peana | azul |
 
 **Animaciones** (por mascota):

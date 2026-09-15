@@ -1,2 +1,2 @@
 @echo off
-python C:\Users\VersusPc\lcdglance\launch_detached.py
+python "%~dp0launch_detached.py"

@@ -1,14 +1,22 @@
 """Launch LCDGlance detached (survives console close) and kill stale instances."""
 import os, sys, time, subprocess
 
-LCD_DIR = r"C:\Users\VersusPc\lcdglance"
+# Portable: use the directory where this launcher lives
+LCD_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(LCD_DIR, "lcdglance.py")
 LOG = os.path.join(LCD_DIR, "lcdglance.log")
 
-PYTHONW = r"C:\Users\VersusPc\AppData\Local\Programs\Python\Python313\pythonw.exe"
-if not os.path.exists(PYTHONW):
-    PYTHONW = r"C:\Users\VersusPc\AppData\Local\Microsoft\WindowsApps\pythonw.exe"
-if not os.path.exists(PYTHONW):
+# Try to find a good pythonw.exe (portable across users)
+PYTHONW = None
+for candidate in [
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Python\Python*\pythonw.exe"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Microsoft\WindowsApps\pythonw.exe"),
+    sys.executable,
+]:
+    if candidate and os.path.exists(candidate.replace("*", "")):
+        PYTHONW = candidate.replace("*", "")
+        break
+if not PYTHONW:
     PYTHONW = sys.executable
 
 DETACHED_PROCESS = 0x00000008

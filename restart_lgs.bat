@@ -10,5 +10,5 @@ taskkill /F /IM python3.13.exe 2>nul
 taskkill /F /IM python.exe 2>nul
 timeout /T 1 /NOBREAK >nul
 echo Starting lcdglance v3.0...
-start "" /B python -u C:\Users\VersusPc\lcdglance\lcdglance.py
+start "" /B python -u "%~dp0lcdglance.py"
 echo Done!
