@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+lcdglance.log
+oc_seen.json

@@ -1,0 +1,9 @@
+{
+  "host": "",
+  "user": "root",
+  "key_path": "",
+  "poll_interval": 30,
+  "timeout": 5,
+  "max_retries": 3,
+  "retry_interval": 60
+}
