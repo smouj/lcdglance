@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
-lcdglance.log
-oc_seen.json
+*.pyo
+preview/_sheet_*.png
+preview/_header_zoom.png
+preview/*_clock.png

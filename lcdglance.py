@@ -146,6 +146,10 @@ class LCDGlance:
         self._in_screensaver = False
         self._in_quickmenu = False
         self._last_input = time.time()
+        # Mascot cycling (B3): None=auto, else forced source key
+        self._MASCOT_CYCLE = [None, "pc", "openclaw", "codex"]
+        self._mascot_cycle_idx = 0
+        self._mascot_override = None
 
     # ---- lifecycle
     def start(self):
@@ -174,7 +178,7 @@ class LCDGlance:
 
         self.running = True
         print(f"Pages: {[p.name for p in self.pages]}", flush=True)
-        print("B1/B2 pages  B3 scouter  B4 flash  B3+B4 menu  B1+B2 cycle", flush=True)
+        print("B1/B2 pages  B3 mascot  B3-hold scouter  B4 flash  B3+B4 menu  B1+B2 cycle", flush=True)
         print("Animations: controller + scene director + transitions + toasts + sprites", flush=True)
         if self.vps.enabled:
             print(f"VPS: {self.vps.user}@{self.vps.host} (poll {self.vps.poll_interval}s)", flush=True)
@@ -310,10 +314,11 @@ class LCDGlance:
                             self.scene.next_page()
                             self._start_transition_if_page_changed(old_page)
                         elif action == "status_tap":
-                            threading.Thread(target=self._safe_poll, daemon=True).start()
-                            self.scene.show_status(5.0)
-                            self.anim.push(AnimState.WORKING, 5.0)
+                            # B3 tap: jump to the Mascot page and cycle the
+                            # featured mascot (AUTO -> PC -> CLAW -> CODEX).
+                            self._cycle_mascot()
                         elif action == "status_hold":
+                            # B3 hold: Scouter readout (power level + temps).
                             threading.Thread(target=self._safe_poll, daemon=True).start()
                             self.scene.show_status(8.0)
                             self.anim.push(AnimState.ALERT, 8.0)
@@ -350,6 +355,7 @@ class LCDGlance:
                 # Build context
                 sources = build_sources(st, self.oc, self.dl)
                 active = pick_active(sources)
+                active = self._apply_mascot_override(sources, active)
                 load = load_index(st, self.oc, self.dl)
                 busy = is_busy(st, self.oc, self.dl, active)
 
@@ -451,6 +457,28 @@ class LCDGlance:
                 traceback.print_exc()
                 time.sleep(1.0)
 
+    def _apply_mascot_override(self, sources, active):
+        """If the user forced a mascot with B3, return that source instead."""
+        key = self._mascot_override
+        if key is None:
+            return active
+        for s in sources:
+            if s["key"] == key:
+                return s
+        return active
+
+    def _cycle_mascot(self):
+        """B3: step to the next mascot and jump to the Mascot page."""
+        self._mascot_cycle_idx = (self._mascot_cycle_idx + 1) % len(self._MASCOT_CYCLE)
+        self._mascot_override = self._MASCOT_CYCLE[self._mascot_cycle_idx]
+        label = "AUTO" if self._mascot_override is None else self._mascot_override.upper()
+        # Jump to the Mascot page so the change is immediately visible
+        try:
+            self.scene.page_index = self.pages.index(self.mascot_page)
+        except (ValueError, AttributeError):
+            self.scene.page_index = 0
+        self.toast.push(f"MASCOT {label}", "info", 1.6)
+
     def _start_transition_if_page_changed(self, old_index):
         """If the page changed, start a transition animation."""
         new_index = self.scene.page_index
@@ -458,6 +486,7 @@ class LCDGlance:
             st = get_system_stats()
             sources = build_sources(st, self.oc, self.dl)
             active = pick_active(sources)
+            active = self._apply_mascot_override(sources, active)
             load = load_index(st, self.oc, self.dl)
             busy_flag = is_busy(st, self.oc, self.dl, active)
             self.gfx.dots = (new_index, len(self.pages))

@@ -1,0 +1,8 @@
+LCDGlance v9.0 — G510 mascots + RGB + animations + sprites
+============================================================
+[OK] LCD connected
+[OK] RGB LED connected
+Pages: ['Mascot', 'Sources', 'System', 'Network', 'Procs', 'OpenClaw', 'Alerts']
+B1/B2 pages  B3 scouter  B4 flash  B3+B4 menu  B1+B2 cycle
+Animations: controller + scene director + transitions + toasts + sprites
+VPS: disabled (no host in vps_config.json)
