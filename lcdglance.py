@@ -1,93 +1,38 @@
 #!/usr/bin/env python3
 """
-LCDGlance v8.0 — Logitech G510 (160x43 mono LCD), bitmap graphics edition.
+LCDGlance v9.0 — Logitech G510 (160×43 mono LCD), modular edition.
 
-LCD is rendered as real graphics with Pillow (not just text):
-  - Agent face with expressions (idle / watching / happy / worried / alarm)
-  - Progress bars, sparklines, separators
-  - Smart auto-focus: shows the Download view while a download is running,
-    the face with a reaction when an agent finishes, then returns to your page.
+Architecture:
+  src/          Package with all subsystems
+    hardware/   LCD and LED DLL controllers
+    sources/    System stats, OpenClaw, download, VPS monitors
+    render/     Gfx toolkit, bitmap conversion, native bitmap fonts
+    anim/       AnimationController, SceneDirector, transitions, toasts
+    mascots/    MascotRenderer, SpriteSet, interactions, source logic
+    pages/      All page renderers (including screensaver & quick menu)
+    ui/         ButtonHandler, RGBEngine, applet killer
+    util/       Constants, text helpers, RingBuffer
 
-Pages (B1/B2):
-  1 Mascot    active mascot + detailed source stats (B3 cycles source)
-  2 Sources   all sources with status
-  3 System    CPU/RAM/disk bars + temp + top process
-  4 Network   up/down speed + sparkline
-  5 Procs     top processes by CPU
-  6 OpenClaw  agent types + tasks + gateway status
-  7 Alerts    system + agent alert feed
-  8 VPS       remote server SSH stats (if configured)
-  * Download  appears automatically while downloading
-
-Buttons:
-  B1/B2  Previous/Next page
-  B3     On mascot page: cycle displayed source (PC/CLAW/CODEX)
-         On other pages: full overview overlay (8 s)
-  B4     Flash + toggle manual RGB alert
-
-RGB (whole-keyboard, LGS 8.57 LED SDK):
-  page-themed ambient + breathing, warnings, agent flashes, night dimming.
+New in v9.0:
+  - Modular package structure (was single 2062-line file)
+  - AnimationController: state machine for mascot expressions + dynamic FPS
+  - SceneDirector: page selection, auto-focus, overrides, transitions
+  - TransitionEngine: slide/wipe/dissolve between pages
+  - ToastManager: notification overlays without page switches
+  - ButtonHandler: tap, hold (0.5s), and combo detection (B1+B2, B3+B4)
+  - RingBuffer: thread-safe history for CPU/RAM/disk/net sparklines
+  - Dynamic FPS: 4 idle, 8 animated, 12 busy, 24 transitions
+  - Native bitmap font (5×8 body, 3×5 micro) with icon glyphs
+  - Sprite-based mascot rendering with procedural fallback
+  - Mascot interactions (two characters in shared scenes)
+  - Screensaver page (clock + sleeping mascot after 90s idle)
+  - Quick menu page (B3+B4 hold combo for context actions)
+  - All v7.1 functionality preserved with zero regression
 """
 
-import ctypes
-import io
-import json
-import math
-import os
-import subprocess
 import threading
-import traceback
 import time
-
-# ─── Configuration ───────────────────────────────────────────────
-
-LGS_DIR = r"C:\Program Files\Logitech Gaming Software"
-LCD_DLL = os.path.join(LGS_DIR, "SDK", "LCD", "x64", "LogitechLcd.dll")
-LED_DLL = os.path.join(LGS_DIR, "SDK", "LED", "x64", "LogitechLed.dll")
-
-LOGI_LCD_TYPE_MONO = 0x00000001
-BTN_1, BTN_2, BTN_3, BTN_4 = 0x01, 0x02, 0x04, 0x08
-
-W, H = 160, 43
-# The mono background buffer is ONE BYTE PER PIXEL: 160*43 = 6880 bytes.
-# Reference: logitech-lcd crate asserts `mono_bitmap.len() == MONO_WIDTH * MONO_HEIGHT`
-# and documents "160x43 bytes". Passing a packed 1-bpp 860-byte buffer makes the
-# SDK read ~6000 bytes past the end, which renders as noise on the LCD.
-BITMAP_SIZE = W * H
-
-UPDATE_INTERVAL = 0.25         # loop tick: keeps button polling responsive
-ANIM_INTERVAL = 0.25           # mascot / download pages (bob, blink, stripes)
-STATIC_INTERVAL = 0.8          # data pages: content barely changes
-RESUBMIT_AFTER = 5.0           # re-send even if unchanged (protects against LGS)
-HOLD_MS = 0.6                  # long-press threshold for hold actions
-LCD_CHECK_INTERVAL = 5.0
-OC_POLL_INTERVAL = 15.0
-DL_POLL_INTERVAL = 1.0
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SEEN_FILE = os.path.join(HERE, "oc_seen.json")
-VPS_CONFIG_FILE = os.path.join(HERE, "vps_config.json")
-
-# One WSL round-trip returns everything: subagent history (alerts + counts),
-# currently running tasks (which source is active) and Codex activity.
-# A helper script inside WSL does the heavy lifting (openclaw tasks --json over
-# every runtime is ~1.6 MB of JSON) and prints only compact lines, so next to
-# nothing crosses to Windows. See lcd-probe in this folder.
-WSL_CMD = ["wsl.exe", "-d", "Ubuntu-24.04", "-e", "bash", "-lc", "lcd-probe"]
-CREATE_NO_WINDOW = 0x08000000
-
-TERMINAL_OK = {"succeeded"}
-TERMINAL_BAD = {"failed", "timed_out", "cancelled", "lost"}
-
-RGB_STATE = {"effect": "-"}
-
-# bitmap rendering switches
-INVERT = False        # True -> swap lit/unlit pixels
-
-BIN_THRESHOLD = 120   # luminance cutoff when binarising anti-aliased text.
-                      # 128 loses 'o','N','P' on regular Consolas; 100 merges the
-                      # three strokes of a lowercase 'm' into a solid block.
-                      # 120 + Consolas Bold 11 px keeps both whole glyphs and 'm'.
+import traceback
 
 try:
     import psutil
@@ -96,1966 +41,92 @@ except ImportError:
     HAS_PSUTIL = False
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from PIL import Image, ImageOps
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
+from src.util.constants import (
+    W, H, BITMAP_SIZE, LOOP_INTERVAL, RENDER_MIN_GAP,
+    RESUBMIT_AFTER, LCD_RECONNECT, OC_POLL_INTERVAL, DL_POLL_INTERVAL,
+    APP_KILL_INTERVAL, FPS_IDLE, FPS_ANIMATED, FPS_BUSY, FPS_TRANSITION,
+    BTN_1, BTN_2, BTN_3, BTN_4,
+)
+from src.util.text import ascii_text, clip, fmt_speed, fmt_bytes, fmt_uptime, age_str
+from src.util.ringbuf import RingBuffer
+from src.render.bitmap import to_mono_bytes, mono_to_image
+from src.render.gfx import Gfx
+from src.render.bitmap_font import font_body, font_micro, BitmapFont
+from src.hardware.lcd import LCDController
+from src.hardware.led import LEDController
+from src.sources.system import (
+    get_system_stats, NET_HIST, NET_HIST_BUF,
+    CPU_HIST_BUF, RAM_HIST_BUF, DISK_HIST_BUF,
+)
+from src.sources.openclaw import OpenClawMonitor
+from src.sources.download import DownloadDetector
+from src.sources.vps import VPSMonitor
+from src.mascots.mascot import MascotRenderer
+from src.mascots.sprites import create_default_sprites
+from src.mascots.sources import build_sources, pick_active, mood_for, load_index, is_busy
+from src.mascots.interactions import find_interaction
+from src.pages.mascot import MascotPage
+from src.pages.sources import SourcesPage
+from src.pages.system import SystemPage
+from src.pages.network import NetworkPage
+from src.pages.procs import ProcsPage
+from src.pages.openclaw_page import OpenClawPage
+from src.pages.alerts import AlertsPage
+from src.pages.status import StatusPage
+from src.pages.download import DownloadPage
+from src.pages.vps_page import VPSPage
+from src.pages.screensaver import ScreensaverPage
+from src.pages.quickmenu import QuickMenuPage
+from src.anim.controller import AnimationController, AnimState
+from src.anim.scene import SceneDirector
+from src.anim.transition import TransitionEngine
+from src.anim.toast import ToastManager
+from src.ui.buttons import ButtonHandler
+from src.ui.rgb import RGBEngine
+from src.ui.applets import kill_lcd_applets
+
+try:
+    from PIL import ImageOps as _ImageOps
+except ImportError:
+    _ImageOps = None
 
-_TRANSLIT = {
-    "·": "-", "•": "-", "—": "-", "–": "-", "…": "...", "°": "o",
-    "á": "a", "à": "a", "ä": "a", "â": "a", "ã": "a",
-    "é": "e", "è": "e", "ë": "e", "ê": "e",
-    "í": "i", "ì": "i", "ï": "i", "î": "i",
-    "ó": "o", "ò": "o", "ö": "o", "ô": "o", "õ": "o",
-    "ú": "u", "ù": "u", "ü": "u", "û": "u",
-    "ñ": "n", "ç": "c",
-    "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N",
-    "✓": "v", "✔": "v", "✗": "x", "✘": "x",
-}
-
-
-def ascii_text(text):
-    out = []
-    for ch in str(text):
-        if 32 <= ord(ch) <= 126:
-            out.append(ch)
-        else:
-            out.append(_TRANSLIT.get(ch, "?"))
-    return "".join(out).replace("\n", " ").replace("\r", " ")
-
-
-def clip(text, n):
-    t = ascii_text(text)
-    return t if len(t) <= n else t[: n - 1] + "\u2026".replace("\u2026", "~")
-
-
-def fmt_speed(mbps):
-    if mbps >= 10:
-        return f"{mbps:.0f}MB/s"
-    if mbps >= 1:
-        return f"{mbps:.1f}MB/s"
-    return f"{mbps * 1024:.0f}KB/s"
-
-
-def fmt_bytes(mb):
-    if mb >= 1024:
-        return f"{mb / 1024:.2f}GB"
-    if mb >= 1:
-        return f"{mb:.1f}MB"
-    return f"{mb * 1024:.0f}KB"
-
-
-def fmt_uptime(sec):
-    return f"{int(sec) // 3600}h{(int(sec) % 3600) // 60:02d}m"
-
-
-def age_str(ts):
-    d = int(time.time() - ts)
-    if d < 60:
-        return f"{d}s"
-    if d < 3600:
-        return f"{d // 60}m"
-    return f"{d // 3600}h"
-
-
-# ─── palettes / colour math ──────────────────────────────────────
-
-LOAD_PALETTE = [
-    (0.00, (5, 18, 70)), (0.30, (0, 70, 95)), (0.55, (10, 90, 45)),
-    (0.75, (95, 70, 0)), (1.00, (100, 12, 12)),
-]
-PAGE_THEME = {
-    0: None,              # Mascot   -> colour of the active source
-    1: (70, 60, 90),      # Sources  -> slate
-    2: None,              # System   -> CPU gradient
-    3: (0, 65, 90),       # Network  -> teal
-    4: (60, 25, 95),      # Procs    -> violet
-    5: (0, 80, 95),       # OpenClaw -> cyan
-    6: (95, 60, 0),       # Alerts   -> amber
-    7: (0, 60, 80),       # VPS      -> dark teal
-}
-
-
-def lerp_palette(pal, v):
-    if v <= pal[0][0]:
-        return pal[0][1]
-    if v >= pal[-1][0]:
-        return pal[-1][1]
-    for i in range(len(pal) - 1):
-        v0, c0 = pal[i]
-        v1, c1 = pal[i + 1]
-        if v0 <= v <= v1:
-            f = 0.0 if v1 == v0 else (v - v0) / (v1 - v0)
-            return tuple(int(c0[j] + (c1[j] - c0[j]) * f) for j in range(3))
-    return pal[-1][1]
-
-
-# subagent = a real agent run; cron = an automation; acp = Codex; cli = our own
-# exec noise, which the probe filters out.
-RUNTIME_TAG = {"subagent": "AGENT", "cron": "AUTO", "acp": "CODEX", "cli": "CLI"}
-
-
-def _section(text, start_marker, end_marker):
-    """Return the text between two markers (kept for ad-hoc debugging)."""
-    i = text.find(start_marker)
-    if i < 0:
-        return ""
-    i += len(start_marker)
-    j = text.find(end_marker, i) if end_marker else -1
-    return text[i:j] if j >= 0 else text[i:]
-
-
-# ─── LGS applets that steal the LCD ──────────────────────────────
-
-def kill_lcd_applets():
-    for name in ("LCDMedia.exe", "LCDClock.exe", "LCDPop3.exe", "LCDRSS.exe",
-                 "LCDYouTube.exe", "LCDCountdown.exe"):
-        try:
-            subprocess.run(["taskkill", "/F", "/IM", name],
-                           capture_output=True, timeout=3,
-                           creationflags=CREATE_NO_WINDOW)
-        except Exception:
-            pass
-
-
-_MONO_LUT = None
-
-
-def _lut():
-    """256-entry lookup table used to binarise the render in one C-level pass."""
-    global _MONO_LUT
-    if _MONO_LUT is None:
-        if INVERT:
-            _MONO_LUT = [0 if i >= BIN_THRESHOLD else 255 for i in range(256)]
-        else:
-            _MONO_LUT = [255 if i >= BIN_THRESHOLD else 0 for i in range(256)]
-    return _MONO_LUT
-
-
-def to_mono_bytes(img):
-    """PIL image -> Logitech mono LCD background buffer (W*H bytes, one per pixel).
-
-    Traps encoded here:
-      * never use img.convert("1") — Pillow dithers by default (Floyd-Steinberg),
-        turning crisp text into speckled noise. Threshold with a LUT instead.
-      * the buffer is one BYTE per pixel (6880), not packed 1-bpp (860).
-    """
-    return img.convert("L").point(_lut()).tobytes()
-
-
-def mono_to_image(data):
-    """Round-trip the background buffer back to a PIL image (preview parity)."""
-    img = Image.new("L", (W, H), 0)
-    px = img.load()
-    i = 0
-    for y in range(H):
-        for x in range(W):
-            if data[i]:
-                px[x, y] = 255
-            i += 1
-    return img
-
-
-# ─── LCD controller (text + bitmap) ──────────────────────────────
-
-class LCDController:
-    def __init__(self, dll_path=LCD_DLL):
-        self.dll_path = dll_path
-        self.lcd = None
-        self.connected = False
-        self._last_connect = 0.0
-        self._retry_delay = 2.0
-        self._buf = None
-
-    def connect(self):
-        if not os.path.exists(self.dll_path):
-            print(f"[!] LCD DLL missing: {self.dll_path}", flush=True)
-            return False
-        try:
-            self.lcd = ctypes.CDLL(self.dll_path)
-            if not self.lcd.LogiLcdInit(ctypes.c_wchar_p("LCDGlance"),
-                                        LOGI_LCD_TYPE_MONO):
-                print("[!] LCD init failed", flush=True)
-                self.lcd = None
-                return False
-            self.connected = True
-            self._last_connect = time.time()
-            time.sleep(0.1)
-            print("[OK] LCD connected", flush=True)
-            return True
-        except Exception as e:
-            print(f"[!] LCD error: {e}", flush=True)
-            self.lcd = None
-            return False
-
-    def ensure_connected(self):
-        if self.connected and self.lcd:
-            try:
-                if self.lcd.LogiLcdIsConnected(LOGI_LCD_TYPE_MONO):
-                    return True
-            except Exception:
-                pass
-        # Back off progressively (2s -> 4s -> 8s ... capped) so we don't hammer
-        # the SDK when the hardware is unplugged or LGS is stopped.
-        since = time.time() - self._last_connect
-        if since < self._retry_delay:
-            return self.connected
-        self.shutdown()
-        ok = self.connect()
-        self._retry_delay = min(16.0, max(2.0, self._retry_delay * 1.6)) if not ok else 2.0
-        return ok
-
-    def button(self, bit):
-        if not (self.connected and self.lcd):
-            return False
-        try:
-            return bool(self.lcd.LogiLcdIsButtonPressed(bit))
-        except Exception:
-            return False
-
-    def set_text(self, line, text):
-        if self.connected and self.lcd:
-            try:
-                self.lcd.LogiLcdMonoSetText(
-                    ctypes.c_int(line), ctypes.c_wchar_p(clip(text, 40)))
-            except Exception:
-                pass
-
-    def submit(self, data):
-        """Send an already-converted mono buffer straight to the panel."""
-        if not (self.connected and self.lcd):
-            return
-        try:
-            # create_string_buffer, not (c_ubyte*n)(*data): the latter unpacks
-            # 6880 Python ints into an argument list on every single frame.
-            self._buf = ctypes.create_string_buffer(data, len(data))
-            self.lcd.LogiLcdMonoSetBackground(self._buf)
-            self.lcd.LogiLcdUpdate()
-        except Exception:
-            pass
-
-    def set_bitmap(self, img):
-        """img: PIL image 160x43 (any mode) -> mono bitmap, no dithering."""
-        if not (self.connected and self.lcd):
-            return
-        try:
-            data = to_mono_bytes(img)
-            self._buf = ctypes.create_string_buffer(data, len(data))
-            self.lcd.LogiLcdMonoSetBackground(self._buf)
-        except Exception:
-            pass
-
-    def update(self):
-        if self.connected and self.lcd:
-            try:
-                self.lcd.LogiLcdUpdate()
-            except Exception:
-                pass
-
-    def shutdown(self):
-        if self.connected and self.lcd:
-            try:
-                self.lcd.LogiLcdShutdown()
-            except Exception:
-                pass
-        self.connected = False
-        self.lcd = None
-
-
-# ─── LED controller ──────────────────────────────────────────────
-
-class LEDController:
-    def __init__(self, dll_path=LED_DLL):
-        self.dll_path = dll_path
-        self.led = None
-        self.connected = False
-        self._hw_until = 0.0
-
-    def connect(self):
-        if not os.path.exists(self.dll_path):
-            print(f"[!] LED DLL missing: {self.dll_path}", flush=True)
-            return False
-        try:
-            self.led = ctypes.CDLL(self.dll_path)
-            if not self.led.LogiLedInit():
-                print("[!] LED init failed", flush=True)
-                self.led = None
-                return False
-            self.connected = True
-            self.led.LogiLedSaveCurrentLighting()
-            time.sleep(0.05)
-            print("[OK] RGB LED connected", flush=True)
-            return True
-        except Exception as e:
-            print(f"[!] LED error: {e}", flush=True)
-            self.led = None
-            return False
-
-    def hw_busy(self):
-        return time.time() < self._hw_until
-
-    def set_color(self, color):
-        if self.connected and self.led:
-            try:
-                self.led.LogiLedSetLighting(ctypes.c_int(color[0]),
-                                            ctypes.c_int(color[1]),
-                                            ctypes.c_int(color[2]))
-            except Exception:
-                pass
-
-    def flash_async(self, color, dur_ms=2000, interval_ms=220):
-        if self.connected and self.led:
-            try:
-                self.led.LogiLedFlashLighting(
-                    ctypes.c_int(color[0]), ctypes.c_int(color[1]),
-                    ctypes.c_int(color[2]), ctypes.c_int(dur_ms),
-                    ctypes.c_int(interval_ms))
-                self._hw_until = time.time() + dur_ms / 1000.0 + 0.1
-            except Exception:
-                pass
-
-    def stop_effects(self):
-        if self.connected and self.led:
-            try:
-                self.led.LogiLedStopEffects()
-            except Exception:
-                pass
-        self._hw_until = 0.0
-
-    def shutdown(self):
-        if self.connected and self.led:
-            try:
-                self.led.LogiLedStopEffects()
-                self.led.LogiLedRestoreLighting()
-                self.led.LogiLedShutdown()
-            except Exception:
-                pass
-        self.connected = False
-        self.led = None
-
-
-# ─── RGB engine ──────────────────────────────────────────────────
-
-class RGBEngine:
-    def __init__(self, led, oc, dl, vps=None):
-        self.led = led
-        self.oc = oc
-        self.dl = dl
-        self.vps = vps
-        self.manual_alert = False
-        self.night_override = False
-        self.active_source_key = "openclaw"
-        self.busy = False
-        self._seen_event_ts = 0.0
-
-    @staticmethod
-    def _breath(period):
-        t = time.time()
-        return 0.55 + 0.45 * (0.5 + 0.5 * math.sin(2 * math.pi * t / period))
-
-    @staticmethod
-    def _night():
-        h = time.localtime().tm_hour
-        return 0.35 if (h >= 23 or h < 8) else 1.0
-
-    @staticmethod
-    def _scale(c, f):
-        return tuple(max(0, min(100, int(v * f))) for v in c)
-
-    def _ambient(self, st, page):
-        if page == 0:
-            if getattr(self, "busy", False):
-                return ACTIVE_COLOR          # highlight colour while a source is busy
-            return MASCOT_COLOR.get(self.active_source_key, (0, 80, 95))
-        if page == 2:
-            return lerp_palette(LOAD_PALETTE, st.get("cpu", 0) / 100.0)
-        if page == 7:
-            # VPS: teal when online, dim red when offline
-            vps = self.vps.snapshot() if hasattr(self, 'vps') and self.vps else {}
-            if vps.get("online"):
-                return (0, 70, 80)
-            return (80, 20, 20)
-        return PAGE_THEME.get(page) or (0, 60, 90)
-
-    def update(self, st, page):
-        if not self.led.connected:
-            RGB_STATE["effect"] = "off"
-            return
-        now = time.time()
-        oc = self.oc.snapshot()
-
-        if self.manual_alert:
-            if not self.led.hw_busy():
-                self.led.set_color(self._scale((100, 0, 0), self._breath(1.1)))
-            RGB_STATE["effect"] = "ALERT red"
-            return
-
-        ev = oc.get("last_event")
-        if ev and (now - ev["ts"] < 6) and ev["ts"] != self._seen_event_ts:
-            self._seen_event_ts = ev["ts"]
-            if ev["kind"] == "ok":
-                self.led.flash_async((0, 100, 20), 2200, 220)
-                RGB_STATE["effect"] = "AGENT DONE"
-            else:
-                self.led.flash_async((100, 0, 0), 2600, 160)
-                RGB_STATE["effect"] = "AGENT FAIL"
-            return
-
-        if self.led.hw_busy():
-            return
-
-        # downloading -> steady blue-cyan sweep feel
-        if self.dl.active:
-            self.led.set_color(self._scale((0, 60, 100), self._breath(2.0) * self._night()))
-            RGB_STATE["effect"] = "DOWNLOAD"
-            return
-
-        if oc.get("running", 0) > 0:
-            self.led.set_color(self._scale((0, 85, 100), self._breath(1.6) * self._night()))
-            RGB_STATE["effect"] = "AGENTS"
-            return
-
-        cpu, mem, dsk = st.get("cpu", 0), st.get("mem", 0), st.get("disk", 0)
-        if cpu > 90:
-            self.led.set_color(self._scale((100, 45, 0), self._breath(0.9)))
-            RGB_STATE["effect"] = "CPU HIGH"
-            return
-        if mem > 90:
-            self.led.set_color(self._scale((100, 100, 0), self._breath(0.9)))
-            RGB_STATE["effect"] = "RAM HIGH"
-            return
-        if dsk > 95:
-            self.led.set_color(self._scale((100, 0, 0), self._breath(1.8)))
-            RGB_STATE["effect"] = "DISK FULL"
-            return
-
-        base = self._ambient(st, page)
-        self.led.set_color(self._scale(base, self._breath(3.2) * self._night()))
-        names = {0: "mascot", 1: "sources", 2: "cpu-load", 3: "network",
-                 4: "procs", 5: "openclaw", 6: "alerts", 7: "vps"}
-        RGB_STATE["effect"] = names.get(page, "ambient")
-
-    def sweep(self):
-        if not self.led.connected:
-            return
-        for c in [(80, 0, 0), (80, 40, 0), (80, 80, 0), (0, 80, 0),
-                  (0, 80, 80), (0, 0, 80), (60, 0, 80)]:
-            self.led.set_color(c)
-            time.sleep(0.07)
-        self.led.set_color((0, 0, 0))
-
-
-# ─── OpenClaw monitor ────────────────────────────────────────────
-
-class OpenClawMonitor:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self.online = False
-        self.running = self.ok = self.fail = self.total = 0
-        self.last_task = ""
-        self.last_task_status = ""
-        self.last_poll_ok = 0.0
-        self.alerts = []
-        self.last_event = None
-        self._seen = set()
-        self._baselined = False
-        self.active_agents = {}
-        self.codex_seen = False
-        self.codex_active = False
-        self.codex_mtime = 0.0
-        self.codex_last = ""
-        self._load_seen()
-
-    def _load_seen(self):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                self._seen = set(json.load(f).get("seen", []))
-        except Exception:
-            self._seen = set()
-
-    def _save_seen(self):
-        try:
-            with open(SEEN_FILE, "w", encoding="utf-8") as f:
-                json.dump({"seen": list(self._seen)[-500:]}, f)
-        except Exception:
-            pass
-
-    def poll(self):
-        """Read the compact lcd-probe lines and raise alerts for finished work."""
-        try:
-            r = subprocess.run(WSL_CMD, capture_output=True, timeout=180,
-                               creationflags=CREATE_NO_WINDOW)
-            out = r.stdout.decode("utf-8", errors="replace")
-            now = time.time()
-            new_alerts, new_events = [], []
-            ok = fail = total = 0
-            last_task = last_status = ""
-            newest = -1
-            active_agents = {}
-            codex_mtime = 0.0
-            codex_last = ""
-
-            for line in out.splitlines():
-                line = line.strip()
-                if line.startswith("N|"):
-                    try:
-                        total = int(line[2:] or 0)
-                    except ValueError:
-                        pass
-                elif line.startswith("R|"):
-                    p = line.split("|", 2)
-                    if len(p) >= 3:
-                        a = p[2] or "?"
-                        active_agents[a] = active_agents.get(a, 0) + 1
-                elif line.startswith("T|"):
-                    p = line.split("|", 6)
-                    if len(p) < 7:
-                        continue
-                    _, tid, rt, st, agent, ended, label = p
-                    if st in TERMINAL_OK:
-                        ok += 1
-                    elif st in TERMINAL_BAD:
-                        fail += 1
-                    try:
-                        ended_i = int(ended or 0)
-                    except ValueError:
-                        ended_i = 0
-                    if ended_i > newest:
-                        newest, last_task, last_status = ended_i, label, st
-                    fresh = bool(tid) and tid not in self._seen
-                    if tid:
-                        self._seen.add(tid)
-                    if fresh and self._baselined:
-                        good = st in TERMINAL_OK
-                        kind = "ok" if good else "fail"
-                        tag = RUNTIME_TAG.get(rt, (rt or "task").upper())
-                        text = f"{tag} {'OK' if good else st.upper()}: {label}"
-                        new_alerts.append((now, kind, text))
-                        # flash + jump only for real agent runs and real problems;
-                        # routine heartbeat successes would be noise.
-                        if rt == "subagent" or not good:
-                            new_events.append((now, kind, text))
-                elif line.startswith("C2|"):
-                    p = line.split("|", 2)
-                    try:
-                        codex_mtime = max(codex_mtime, float(p[1] or 0))
-                    except (ValueError, IndexError):
-                        pass
-                    if len(p) >= 3:
-                        codex_last = p[2]
-                elif line.startswith("C|"):
-                    try:
-                        codex_mtime = max(codex_mtime, float(line[2:] or 0))
-                    except ValueError:
-                        pass
-
-            self._save_seen()
-
-            with self._lock:
-                self.online = True
-                self.running = sum(active_agents.values())
-                self.ok, self.fail, self.total = ok, fail, total
-                self.last_task, self.last_task_status = last_task, last_status
-                self.last_poll_ok = now
-                self.active_agents = active_agents
-                self.codex_seen = codex_mtime > 0
-                self.codex_mtime = codex_mtime
-                self.codex_last = codex_last
-                self.codex_active = bool(codex_mtime) and (now - codex_mtime) < 180
-                if not self._baselined:
-                    self._baselined = True
-                    self.alerts.append((now, "info", "OpenClaw link up"))
-                for ts, kind, text in new_alerts:
-                    self.alerts.append((ts, kind, text))
-                for ts, kind, text in new_events:
-                    self.last_event = {"ts": ts, "kind": kind, "label": text}
-                if len(self.alerts) > 40:
-                    self.alerts = self.alerts[-40:]
-        except Exception:
-            with self._lock:
-                self.online = False
-
-    def snapshot(self):
-        with self._lock:
-            return {
-                "online": self.online, "running": self.running,
-                "ok": self.ok, "fail": self.fail, "total": self.total,
-                "last_task": self.last_task,
-                "last_task_status": self.last_task_status,
-                "last_poll_ok": self.last_poll_ok,
-                "last_event": dict(self.last_event) if self.last_event else None,
-                "alerts": list(self.alerts),
-                "active_agents": dict(self.active_agents),
-                "codex_seen": self.codex_seen,
-                "codex_active": self.codex_active,
-                "codex_mtime": self.codex_mtime,
-                "codex_last": self.codex_last,
-            }
-
-
-# ─── Download detector ───────────────────────────────────────────
-
-# Only real download locations are watched. Browser caches and %TEMP% are
-# deliberately excluded: streaming video writes there continuously and would
-# otherwise pin the Download view on screen forever.
-DL_DIRS = [
-    os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"),
-    os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
-    os.path.join(os.environ.get("USERPROFILE", ""), "Documents"),
-    os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Steam",
-                 "steamapps", "downloading"),
-    os.path.join(os.environ.get("ProgramFiles", ""), "Steam",
-                 "steamapps", "downloading"),
-]
-
-DL_HINTS = ("chrome", "msedge", "firefox", "brave", "opera", "vivaldi",
-            "steam", "curl", "wget", "aria2", "qbittorrent", "transmission",
-            "idman", "battle.net", "epicgames", "origin", "eaapp", "gog",
-            "uplay", "ubisoft")
-
-DL_MIN_GROWTH_MB = 0.30   # a watched file must grow at least this per poll (~1 s)
-DL_MIN_NET_MB = 0.15      # and the link must carry at least this
-DL_MIN_STREAK = 4         # qualifying polls in a row before showing (~4 s)
-DL_MIN_TOTAL_MB = 3.0     # and this much transferred, so a page load can't trip it
-DL_QUIET_STOP = 12        # polls without growth before hiding (~12 s)
-
-
-class DownloadDetector:
-    """Shows the Download view only for a genuine, sustained file download.
-
-    A file must keep growing inside a real download folder *and* the network must
-    be carrying traffic, repeatedly, for several seconds. Caches and %TEMP% are
-    excluded so streaming video never triggers it.
-    """
-
-    def __init__(self):
-        self.active = False
-        self.name = ""
-        self.speed = 0.0            # MB/s (recent)
-        self.peak = 0.0
-        self.total_mb = 0.0         # accumulated this download
-        self.file = ""
-        self.file_mb = 0.0
-        self.started = 0.0
-        self._last_rx = 0.0
-        self._last_bytes = {}
-        self._files = {}
-        self._streak = 0
-        self._quiet = 0
-        self._name_t = 0.0
-        self._name_cached = ""
-
-    def _downloader_name(self):
-        """Best-effort name of the downloading process (cosmetic only).
-
-        Cached for 5 s: a process scan costs ~300 ms and this is called from the
-        1 s download poll, which would otherwise hitch the render loop.
-        """
-        if not HAS_PSUTIL:
-            return ""
-        now = time.time()
-        if now - self._name_t < 5.0:
-            return self._name_cached
-        best, best_rate = "", 0.0
-        for p in psutil.process_iter(["pid", "name"]):
-            try:
-                nm = (p.info["name"] or "").lower()
-                if not any(h in nm for h in DL_HINTS):
-                    continue
-                wr = p.io_counters().write_bytes
-                prev = self._last_bytes.get(p.info["pid"])
-                self._last_bytes[p.info["pid"]] = wr
-                if prev is not None:
-                    rate = (wr - prev) / (1024 ** 2)
-                    if rate > best_rate:
-                        best, best_rate = p.info["name"], rate
-            except Exception:
-                continue
-        self._name_t = now
-        self._name_cached = best
-        return best
-
-    def _fastest_growing(self):
-        """(filename, size_mb, delta_mb) of the fastest-growing download file."""
-        best = None
-        for d in DL_DIRS:
-            if not d or not os.path.isdir(d):
-                continue
-            try:
-                for e in os.scandir(d):
-                    if not e.is_file(follow_symlinks=False):
-                        continue
-                    try:
-                        stt = e.stat()
-                    except Exception:
-                        continue
-                    if time.time() - stt.st_mtime > 90:
-                        continue
-                    prev = self._files.get(e.path)
-                    self._files[e.path] = stt.st_size
-                    if prev is not None and stt.st_size > prev:
-                        delta = (stt.st_size - prev) / (1024 ** 2)
-                        if best is None or delta > best[2]:
-                            best = (e.name, stt.st_size / (1024 ** 2), delta)
-            except Exception:
-                continue
-        return best
-
-    def poll(self, st):
-        if not HAS_PSUTIL:
-            return
-        now = time.time()
-        rx = st.get("net_recv", 0.0)
-        rx_rate = (rx - self._last_rx) if self._last_rx else 0.0
-        self._last_rx = rx
-
-        # No traffic on the link means no download can be progressing, so skip
-        # the directory scan entirely — it was the single biggest CPU consumer
-        # in the whole loop (~10 % of a core at 1 Hz).
-        if rx_rate < DL_MIN_NET_MB and not self.active:
-            self._streak = 0
-            self.total_mb = 0.0
-            return
-
-        found = self._fastest_growing()
-        qualifies = (found is not None
-                     and found[2] >= DL_MIN_GROWTH_MB
-                     and rx_rate >= DL_MIN_NET_MB)
-
-        if qualifies:
-            self._quiet = 0
-            self._streak += 1
-            self.speed = rx_rate
-            self.total_mb += found[2]
-            self.file, self.file_mb = found[0], found[1]
-            self.peak = max(self.peak, self.speed)
-            if not self.active and self._streak >= DL_MIN_STREAK \
-                    and self.total_mb >= DL_MIN_TOTAL_MB:
-                self.active = True
-                self.started = now
-            if self.active:
-                self.name = self._downloader_name() or self.name or found[0]
-        else:
-            self._streak = 0
-            if self.active:
-                self._quiet += 1
-                if self._quiet > DL_QUIET_STOP:
-                    self.active = False
-                    self._quiet = 0
-                    self.speed = 0.0
-                    self.total_mb = 0.0
-            else:
-                self.total_mb = 0.0
-
-    def snapshot(self):
-        return {
-            "active": self.active, "name": self.name,
-            "speed": self.speed, "peak": self.peak,
-            "total_mb": self.total_mb, "file": self.file,
-            "file_mb": self.file_mb,
-            "elapsed": (time.time() - self.started) if self.started else 0.0,
-        }
-
-
-
-# ─── VPS monitor (SSH, async) ──────────────────────────────────────
-
-class VPSMonitor:
-    """Polls a remote VPS via SSH for CPU, RAM, disk, uptime and top processes.
-
-    Runs on its own thread with configurable poll interval.  If SSH fails
-    ``max_retries`` times in a row it enters OFFLINE mode and retries less
-    frequently.  When ``host`` is empty the monitor is disabled entirely and
-    the VPS page is hidden.
-    """
-
-    def __init__(self):
-        cfg = self._load_config()
-        self.host = cfg.get("host", "")
-        self.user = cfg.get("user", "root")
-        self.key_path = cfg.get("key_path", "")
-        self.poll_interval = cfg.get("poll_interval", 30)
-        self.timeout = cfg.get("timeout", 5)
-        self.max_retries = cfg.get("max_retries", 3)
-        self.retry_interval = cfg.get("retry_interval", 60)
-        self.enabled = bool(self.host)
-        self._lock = threading.Lock()
-        self.online = False
-        self.cpu = 0.0
-        self.ram = 0.0
-        self.disk = 0.0
-        self.uptime = ""
-        self.top_procs = []       # [(name, cpu%), ...]
-        self._fail_count = 0
-        self._last_poll = 0.0
-
-    @staticmethod
-    def _load_config():
-        try:
-            with open(VPS_CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-
-    def _ssh_cmd(self):
-        cmd = ["ssh", "-o", f"ConnectTimeout={self.timeout}",
-               "-o", "StrictHostKeyChecking=no",
-               "-o", "BatchMode=yes",
-               "-o", f"ServerAliveInterval={self.timeout}"]
-        if self.key_path:
-            cmd += ["-i", self.key_path]
-        cmd.append(f"{self.user}@{self.host}")
-        return cmd
-
-    def poll(self):
-        """Collect VPS stats via SSH.  Called from a background thread."""
-        if not self.enabled:
-            return
-        # If offline after max_retries, retry less frequently
-        if self._fail_count >= self.max_retries:
-            now = time.time()
-            if now - self._last_poll < self.retry_interval:
-                return
-        cmd = self._ssh_cmd()
-        # One round-trip: cat loadavg; echo ---; free -m; echo ---; df -h /; echo ---; uptime; echo ---; ps
-        remote = (
-            "cat /proc/loadavg; echo '---'; "
-            "free -m | head -2; echo '---'; "
-            "df -h / | tail -1; echo '---'; "
-            "cat /proc/uptime; echo '---'; "
-            "ps -eo %mem,%cpu,comm --sort=-%cpu | head -4"
-        )
-        try:
-            r = subprocess.run(cmd + [remote], capture_output=True, timeout=self.timeout + 3,
-                               creationflags=CREATE_NO_WINDOW)
-            if r.returncode != 0:
-                raise RuntimeError(f"ssh exit {r.returncode}")
-            out = r.stdout.decode("utf-8", errors="replace")
-            sections = out.split("---")
-            now = time.time()
-
-            # CPU from loadavg (1-min avg / cores approximation)
-            cpu = 0.0
-            if len(sections) > 0:
-                parts = sections[0].strip().split()
-                if len(parts) >= 1:
-                    try:
-                        load1 = float(parts[0])
-                        # Approximate: load1 * 100 / cores; clamp
-                        cores = os.cpu_count() or 1
-                        cpu = min(100.0, load1 * 100.0 / max(cores, 1))
-                    except ValueError:
-                        pass
-
-            # RAM from free -m
-            ram = 0.0
-            if len(sections) > 1:
-                lines = sections[1].strip().splitlines()
-                for line in lines:
-                    if line.startswith("Mem:"):
-                        parts = line.split()
-                        if len(parts) >= 3:
-                            try:
-                                used = int(parts[2])
-                                total_str = parts[1]
-                                total = int(total_str)
-                                ram = (used / total * 100) if total else 0.0
-                            except (ValueError, IndexError):
-                                pass
-                        break
-
-            # Disk from df -h /
-            disk = 0.0
-            if len(sections) > 2:
-                line = sections[2].strip()
-                parts = line.split()
-                if len(parts) >= 5:
-                    try:
-                        disk = float(parts[4].rstrip("%"))
-                    except ValueError:
-                        pass
-
-            # Uptime from /proc/uptime
-            uptime_str = ""
-            if len(sections) > 3:
-                parts = sections[3].strip().split()
-                if parts:
-                    try:
-                        up_s = float(parts[0])
-                        d = int(up_s) // 86400
-                        h = (int(up_s) % 86400) // 3600
-                        m = (int(up_s) % 3600) // 60
-                        if d > 0:
-                            uptime_str = f"{d}d{h}h"
-                        elif h > 0:
-                            uptime_str = f"{h}h{m:02d}m"
-                        else:
-                            uptime_str = f"{m}m"
-                    except ValueError:
-                        uptime_str = sections[3].strip()[:12]
-
-            # Top processes
-            top_procs = []
-            if len(sections) > 4:
-                lines = sections[4].strip().splitlines()
-                for line in lines[1:]:   # skip header
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        try:
-                            cpu_p = float(parts[0])
-                            name = parts[2].split("/")[-1][:14]
-                            top_procs.append((name, cpu_p))
-                        except (ValueError, IndexError):
-                            pass
-                top_procs = top_procs[:3]
-
-            with self._lock:
-                self.online = True
-                self.cpu = cpu
-                self.ram = ram
-                self.disk = disk
-                self.uptime = uptime_str
-                self.top_procs = top_procs
-                self._fail_count = 0
-                self._last_poll = now
-
-        except Exception:
-            with self._lock:
-                self._fail_count += 1
-                if self._fail_count >= self.max_retries:
-                    self.online = False
-                self._last_poll = time.time()
-
-    def snapshot(self):
-        with self._lock:
-            return {
-                "enabled": self.enabled,
-                "online": self.online,
-                "cpu": self.cpu,
-                "ram": self.ram,
-                "disk": self.disk,
-                "uptime": self.uptime,
-                "top_procs": list(self.top_procs),
-                "host": self.host,
-                "fail_count": self._fail_count,
-            }
-
-# ─── system stats ────────────────────────────────────────────────
-
-_net = {"sent": 0.0, "recv": 0.0, "t": 0.0, "up": 0.0, "dn": 0.0}
-NET_HIST = []          # sparkline history (KB/s)
-
-# psutil.process_iter() costs ~300 ms on this machine, so the two parts of the
-# stats are cached separately: cheap counters refresh every second, the process
-# scan only every few seconds. Without this the loop burned ~1.7 s of CPU per
-# second of wall clock.
-STATS_TTL = 1.0
-TOP_TTL = 3.0
-_base_cache = {"t": 0.0, "data": {}}
-_top_cache = {"t": 0.0, "data": [], "busy": False}
-
-# psutil reports these as top CPU consumers but they are just Windows bookkeeping
-# (System Idle Process is literally idle time).
-SKIP_PROCS = {"", "system idle process", "system", "idle", "memory compression"}
-
-
-def _collect_base(st):
-    st["cpu"] = psutil.cpu_percent(interval=None)
-    f = psutil.cpu_freq()
-    st["cpu_freq"] = f.current if f else 0
-    m = psutil.virtual_memory()
-    st["mem"] = m.percent
-    st["mem_used"] = m.used / (1024 ** 3)
-    st["mem_total"] = m.total / (1024 ** 3)
-    d = psutil.disk_usage("C:\\")
-    st["disk"] = d.percent
-    st["disk_used"] = d.used / (1024 ** 3)
-    st["disk_total"] = d.total / (1024 ** 3)
-    n = psutil.net_io_counters()
-    now = time.time()
-    sent = n.bytes_sent / (1024 ** 2)
-    recv = n.bytes_recv / (1024 ** 2)
-    dt = now - _net["t"]
-    if dt > 0 and _net["t"] > 0:
-        _net["up"] = (sent - _net["sent"]) / dt
-        _net["dn"] = (recv - _net["recv"]) / dt
-    _net.update(sent=sent, recv=recv, t=now)
-    st["net_up"], st["net_dn"] = _net["up"], _net["dn"]
-    st["net_sent"], st["net_recv"] = sent, recv
-    NET_HIST.append(_net["dn"] * 1024)
-    if len(NET_HIST) > 60:
-        del NET_HIST[:-60]
-    try:
-        temps = psutil.sensors_temperatures()
-        tl = []
-        if temps:
-            for name, entries in temps.items():
-                for e in entries:
-                    if e.current is not None:
-                        tl.append((e.label or name, e.current))
-        st["temps"] = tl
-    except Exception:
-        st["temps"] = []
-    st["procs"] = len(psutil.pids())
-    st["uptime"] = time.time() - psutil.boot_time()
-    return st
-
-
-def _collect_top():
-    procs = []
-    for p in psutil.process_iter(["name", "cpu_percent", "memory_percent"]):
-        try:
-            i = p.info
-            nm = (i.get("name") or "").strip()
-            if nm.lower() in SKIP_PROCS or i["cpu_percent"] is None:
-                continue
-            procs.append(i)
-        except Exception:
-            continue
-    procs.sort(key=lambda x: x.get("cpu_percent", 0) or 0, reverse=True)
-    return procs[:3]
-
-
-def _refresh_top_async():
-    """Scan processes off the render thread: it costs ~350 ms on this machine."""
-    if _top_cache["busy"]:
-        return
-    _top_cache["busy"] = True
-
-    def work():
-        try:
-            _top_cache["data"] = _collect_top()
-            _top_cache["t"] = time.time()
-        except Exception:
-            pass
-        finally:
-            _top_cache["busy"] = False
-
-    threading.Thread(target=work, daemon=True).start()
-
-
-def get_system_stats():
-    if not HAS_PSUTIL:
-        return {}
-    now = time.time()
-    st = _base_cache["data"]
-    try:
-        if not st or now - _base_cache["t"] >= STATS_TTL:
-            st = _collect_base(st)
-            _base_cache.update(t=now, data=st)
-        if now - _top_cache["t"] >= TOP_TTL:
-            _refresh_top_async()
-        st["top"] = _top_cache["data"]
-    except Exception:
-        pass
-    return st
-
-
-# ─── graphics toolkit ────────────────────────────────────────────
-
-class Gfx:
-    """Small drawing helpers on a 160x43 1-bit canvas."""
-
-    def __init__(self):
-        self.font = None
-        self.font_small = None
-        self.dots = None          # (index, total) page indicator, set per frame
-        if HAS_PIL:
-            # Consolas Bold survives 1-bit thresholding far better than regular:
-            # at threshold 128 regular Consolas loses 'o','N','P' right-side strokes.
-            # 11 px for titles, 10 px for body — 9 px degrades once binarised
-            # (CPU read as CPV, RAM as AAM).
-            for cand in ("consolab.ttf", "consola.ttf", "lucon.ttf"):
-                p = os.path.join(r"C:\Windows\Fonts", cand)
-                if os.path.exists(p):
-                    try:
-                        self.font = ImageFont.truetype(p, 11)
-                        self.font_small = ImageFont.truetype(p, 10)
-                        break
-                    except Exception:
-                        pass
-            if self.font is None:
-                self.font = ImageFont.load_default()
-            if self.font_small is None:
-                self.font_small = self.font
-
-    def page_dots(self, d, dots=None):
-        """Seven page dots pinned to the top-right: the current page indicator.
-
-        Pinned to a fixed position so every page carries it identically; the
-        current page is the filled one.
-        """
-        dots = dots if dots is not None else self.dots
-        if not dots:
-            return
-        idx, total = dots
-        bx = W - 4 - ((total - 1) * 3 + 3)
-        for i in range(total):
-            cx = bx + i * 3
-            if i == idx:
-                d.rectangle([cx, 4, cx + 2, 6], fill=255)
-            else:
-                d.point((cx + 1, 5), fill=255)
-
-    def frame(self, d, title, right="", dots=None):
-        """Shared page chrome: 11 px title, right context, 1 px rule, page balls.
-
-        Every page uses this so the panel reads as one consistent instrument
-        instead of seven unrelated screens.
-        """
-        dots = dots if dots is not None else self.dots
-        total = dots[1] if dots else 0
-        t = ascii_text(title)
-        d.text((4, -1), t, font=self.font, fill=255)
-        tw = d.textlength(t, font=self.font)
-        d.line([(0, 12), (W - 1, 12)], fill=255)
-        self.page_dots(d, dots)
-        if right:
-            r = ascii_text(right)
-            rw = d.textlength(r, font=self.font_small)
-            rx = (W - 10 - ((total - 1) * 3 + 3) - rw) if total else (W - 4 - rw)
-            if rx > tw + 6:
-                d.text((rx, 0), r, font=self.font_small, fill=255)
-
-    @staticmethod
-    def canvas():
-        img = Image.new("L", (W, H), 0)
-        return img, ImageDraw.Draw(img)
-
-    def text(self, d, xy, s, small=False):
-        d.text(xy, ascii_text(s), font=(self.font_small if small else self.font), fill=255)
-
-    @staticmethod
-    def hline(d, y, x0=0, x1=W - 1):
-        d.line([(x0, y), (x1, y)], fill=255)
-
-    @staticmethod
-    def hbar(d, x, y, w, h, pct, fill=255, outline=True):
-        pct = max(0.0, min(1.0, pct))
-        if outline:
-            d.rectangle([x, y, x + w - 1, y + h - 1], outline=fill)
-            inner_w = max(0, int((w - 2) * pct))
-            if inner_w > 0:
-                d.rectangle([x + 1, y + 1, x + inner_w, y + h - 2], fill=fill)
-        else:
-            inner_w = max(0, int(w * pct))
-            if inner_w:
-                d.rectangle([x, y, x + inner_w - 1, y + h - 1], fill=fill)
-
-    @staticmethod
-    def stripes(d, x, y, w, h, phase):
-        """Indeterminate bar: moving blocks."""
-        blk = 8
-        off = int(phase) % (blk * 2)
-        d.rectangle([x, y, x + w - 1, y + h - 1], outline=255)
-        xx = x + 1 - off
-        while xx < x + w - 1:
-            x0 = max(xx, x + 1)
-            x1 = min(xx + blk - 1, x + w - 2)
-            if x1 >= x0:
-                d.rectangle([x0, y + 1, x1, y + h - 2], fill=255)
-            xx += blk * 2
-
-    @staticmethod
-    def sparkline(d, x, y, w, h, values):
-        if not values:
-            return
-        vals = values[-w:]
-        mx = max(vals) or 1.0
-        n = len(vals)
-        pts = []
-        for i, v in enumerate(vals):
-            px = x + int(i * (w - 1) / max(1, n - 1))
-            py = y + h - 1 - int((v / mx) * (h - 1))
-            pts.append((px, py))
-        if len(pts) > 1:
-            d.line(pts, fill=255)
-
-
-# ─── agent face ──────────────────────────────────────────────────
-
-def self_alert(st, oc):
-    s = oc.snapshot()
-    ev = s.get("last_event")
-    if ev and ev["kind"] == "fail" and (time.time() - ev["ts"] < 8):
-        return True
-    return (st.get("cpu", 0) > 95) or (st.get("mem", 0) > 95)
-
-
-# ─── mascots ───────────────────────────────────────────────────
-
-MASCOT_COLOR = {
-    "pc": (0, 70, 95),        # blue
-    "openclaw": (0, 88, 92),   # cyan
-    "codex": (15, 92, 48),     # green
-}
-ACTIVE_COLOR = (95, 80, 0)        # highlight while a source is busy
-FLASH_COLOR = (0, 60, 100)        # download / transfer accent
-MASCOT_NAME = {"pc": "PC", "openclaw": "CLAW", "codex": "CODEX"}
-
-
-def build_sources(st, oc, dl):
-    """The three things the panel watches: the PC, OpenClaw and Codex."""
-    s = oc.snapshot()
-    agents = s.get("active_agents") or {}
-    now = time.time()
-    codex_age = (now - s["codex_mtime"]) if s.get("codex_mtime") else None
-    return [
-        {
-            "key": "pc", "label": "PC", "online": True,
-            "busy": st.get("cpu", 0) > 55,
-            "detail": f"cpu {st.get('cpu', 0):.0f}% ram {st.get('mem', 0):.0f}%",
-        },
-        {
-            "key": "openclaw", "label": "CLAW",
-            "online": bool(s.get("online")),
-            "busy": bool(agents) or s.get("running", 0) > 0,
-            "detail": f"run {sum(agents.values()) or s.get('running', 0)} "
-                      f"ok {s.get('ok', 0)}",
-        },
-        {
-            "key": "codex", "label": "CODEX",
-            "online": bool(s.get("codex_seen")),
-            "busy": bool(s.get("codex_active")),
-            "detail": (f"{age_str(s['codex_mtime'])} ago" if codex_age is not None
-                       else "not found"),
-        },
-    ]
-
-
-def pick_active(sources):
-    """The source to feature: whichever agent is busy, else OpenClaw, else the PC."""
-    for s in sources:
-        if s["key"] != "pc" and s["busy"]:
-            return s
-    for s in sources:
-        if s["key"] == "openclaw" and s["online"]:
-            return s
-    return sources[0]
-
-
-def mood_for(st, oc, dl, src):
-    """Expression for the featured mascot."""
-    if self_alert(st, oc):
-        return "alarm"
-    s = oc.snapshot()
-    ev = s.get("last_event")
-    if ev and (time.time() - ev["ts"] < 8):
-        return "happy" if ev["kind"] == "ok" else "alarm"
-    if dl.active:
-        return "focus"
-    if src and src.get("busy"):
-        return "watch"
-    cpu, mem = st.get("cpu", 0), st.get("mem", 0)
-    if cpu > 90 or mem > 90 or st.get("disk", 0) > 95:
-        return "worried"
-    return "idle"
-
-
-def is_busy(st, oc, dl, src):
-    """True when the machine or the agents are busy enough to warrant a highlight."""
-    s = oc.snapshot()
-    return bool(
-        (src and src.get("busy"))
-        or dl.active
-        or (st.get("cpu", 0) or 0) > 70
-        or sum((s.get("active_agents") or {}).values()) > 0
-    )
-
-
-class MascotRenderer:
-    """Three hand-drawn 1-bit mascots with blinking, bobbing and idle glances."""
-
-    def __init__(self, gfx):
-        self.gfx = gfx
-        self._blink_next = time.time() + 3.0
-        self._blink_until = 0.0
-        self._look = 0
-        self._look_next = time.time() + 4.0
-
-    def _anim(self, mood="idle"):
-        now = time.time()
-        blinking = now < self._blink_until
-        if now > self._blink_next:
-            self._blink_until = now + 0.12
-            self._blink_next = now + 2.2 + (hash(int(now)) % 30) / 10.0
-            blinking = True
-        if now > self._look_next:
-            self._look = (-2, 0, 2)[hash(int(now)) % 3]
-            self._look_next = now + 2.5 + (hash(int(now * 7)) % 25) / 10.0
-        # Bob amplitude/speed varies by mood: energetic when busy, calm idle
-        if mood in ("watch", "happy", "focus"):
-            bob = int(round(2.0 * math.sin(now * 6.0)))   # lively bounce while busy
-        elif mood == "alarm":
-            bob = int(round(2.5 * math.sin(now * 12.0)))  # frantic shake on alarm
-        else:
-            bob = int(round(1.2 * math.sin(now * 2.0)))   # gentle idle breathing
-        return blinking, bob
-
-    # ---- big versions
-    def _activity_flare(self, d, cx, cy):
-        """Animated energy flares radiating outward while the mascot is busy.
-
-        The flare length pulses over time so it reads as radiating energy rather
-        than a static starburst.
-        """
-        t = time.time()
-        pulse = 1.0 + 0.35 * math.sin(t * 9.0)   # radiation pulse
-        # Even burst count is phase-aligned so both sides stay symmetric
-        for dx, dy in ((-18, -6), (-18, 3), (18, -6), (18, 3),
-                       (-13, -14), (13, -14)):
-            reach = int(1.3 * pulse)
-            d.line([(cx + dx, cy + dy),
-                    (cx + dx * reach, cy + dy * reach + (2 if dy > 0 else -2))],
-                   fill=255)
-
-    def draw(self, d, key, cx, cy, mood, busy=False):
-        blinking, bob = self._anim(mood)
-        cy += bob
-        if busy:
-            self._activity_flare(d, cx, cy)
-        if key == "openclaw":
-            self._claw(d, cx, cy, mood, blinking)
-        elif key == "codex":
-            self._codex(d, cx, cy, mood, blinking)
-        else:
-            self._pc(d, cx, cy, mood, blinking)
-
-    def _eyes(self, d, cx, cy, gap, r, blinking):
-        if blinking:
-            d.line([(cx - gap - r, cy), (cx - gap + r, cy)], fill=255)
-            d.line([(cx + gap - r, cy), (cx + gap + r, cy)], fill=255)
-            return
-        for ex in (cx - gap, cx + gap):
-            d.ellipse([ex - r, cy - r, ex + r, cy + r], outline=255)
-            lx = self._look
-            d.ellipse([ex + lx - 1, cy - 1, ex + lx + 1, cy + 1], fill=255)
-
-    def _mouth(self, d, cx, cy, mood):
-        if mood == "happy":
-            d.arc([cx - 6, cy - 5, cx + 6, cy + 4], 20, 160, fill=255)
-        elif mood == "alarm":
-            d.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], outline=255)
-        elif mood == "worried":
-            d.line([(cx - 5, cy + 1), (cx + 5, cy + 1)], fill=255)
-        else:
-            d.line([(cx - 4, cy), (cx + 4, cy)], fill=255)
-
-    def _claw(self, d, cx, cy, mood, blinking):
-        """OpenClaw: a little crab."""
-        d.rounded_rectangle([cx - 15, cy - 10, cx + 15, cy + 11],
-                            radius=8, outline=255)
-        # claws (open when attentive)
-        spread = 3 if mood in ("watch", "happy", "focus") else 0
-        d.arc([cx - 25 - spread, cy - 12, cx - 13 + spread, cy + 2], 90, 280, fill=255)
-        d.arc([cx + 13 - spread, cy - 12, cx + 25 + spread, cy + 2], 260, 90, fill=255)
-        # legs
-        for dy in (-5, 0, 5):
-            d.line([(cx - 15, cy + dy), (cx - 21, cy + dy + 3)], fill=255)
-            d.line([(cx + 15, cy + dy), (cx + 21, cy + dy + 3)], fill=255)
-        # eyes on stalks above the shell
-        ey = cy - 16
-        d.line([(cx - 7, cy - 10), (cx - 7, ey + 3)], fill=255)
-        d.line([(cx + 7, cy - 10), (cx + 7, ey + 3)], fill=255)
-        self._eyes(d, cx, ey, 7, 3, blinking)
-        self._mouth(d, cx, cy + 5, mood)
-
-    def _codex(self, d, cx, cy, mood, blinking):
-        """Codex: a robot with a scanning visor."""
-        d.rounded_rectangle([cx - 15, cy - 12, cx + 15, cy + 13],
-                            radius=4, outline=255)
-        d.line([(cx, cy - 12), (cx, cy - 17)], fill=255)
-        if int(time.time() * 2) % 2 == 0:
-            d.ellipse([cx - 2, cy - 20, cx + 2, cy - 16], fill=255)
-        else:
-            d.ellipse([cx - 2, cy - 20, cx + 2, cy - 16], outline=255)
-        vx0, vx1, vy0, vy1 = cx - 11, cx + 11, cy - 7, cy + 1
-        d.rectangle([vx0, vy0, vx1, vy1], outline=255)
-        if blinking:
-            d.line([(vx0 + 1, (vy0 + vy1) // 2), (vx1 - 1, (vy0 + vy1) // 2)], fill=255)
-        else:
-            span = (vx1 - vx0) - 8
-            px = vx0 + 1 + int(span * (0.5 + 0.5 * math.sin(time.time() * 1.7)))
-            d.rectangle([px, vy0 + 1, px + 5, vy1 - 1], fill=255)
-        for row in range(2):
-            for col in range(4):
-                x = cx - 9 + col * 5
-                y = cy + 5 + row * 4
-                filled = (mood == "happy") or ((row * 4 + col) % 3 != 2)
-                if filled:
-                    d.rectangle([x, y, x + 2, y + 2], fill=255)
-                else:
-                    d.rectangle([x, y, x + 2, y + 2], outline=255)
-
-    def _pc(self, d, cx, cy, mood, blinking):
-        """Your PC: a monitor with a face."""
-        d.rounded_rectangle([cx - 16, cy - 13, cx + 16, cy + 7],
-                            radius=3, outline=255)
-        d.line([(cx, cy + 7), (cx, cy + 12)], fill=255)
-        d.line([(cx - 7, cy + 12), (cx + 7, cy + 12)], fill=255)
-        self._eyes(d, cx, cy - 5, 8, 3, blinking)
-        self._mouth(d, cx, cy + 2, mood)
-
-    # ---- mini versions for the sources strip
-    def draw_mini(self, d, key, cx, cy, busy):
-        if key == "openclaw":
-            d.ellipse([cx - 8, cy - 5, cx + 8, cy + 6], outline=255)
-            d.arc([cx - 14, cy - 6, cx - 7, cy + 2], 100, 270, fill=255)
-            d.arc([cx + 7, cy - 6, cx + 14, cy + 2], 270, 80, fill=255)
-            d.line([(cx - 4, cy - 5), (cx - 4, cy - 8)], fill=255)
-            d.line([(cx + 4, cy - 5), (cx + 4, cy - 8)], fill=255)
-            d.ellipse([cx - 5, cy - 10, cx - 3, cy - 8], fill=255)
-            d.ellipse([cx + 3, cy - 10, cx + 5, cy - 8], fill=255)
-        elif key == "codex":
-            d.rounded_rectangle([cx - 8, cy - 6, cx + 8, cy + 6],
-                                radius=2, outline=255)
-            d.line([(cx, cy - 6), (cx, cy - 9)], fill=255)
-            if busy:
-                d.rectangle([cx - 5, cy - 2, cx + 5, cy + 1], fill=255)
-            else:
-                d.rectangle([cx - 5, cy - 2, cx + 5, cy + 1], outline=255)
-        else:
-            d.rounded_rectangle([cx - 8, cy - 7, cx + 8, cy + 4],
-                                radius=2, outline=255)
-            d.line([(cx, cy + 4), (cx, cy + 7)], fill=255)
-            d.line([(cx - 4, cy + 7), (cx + 4, cy + 7)], fill=255)
-            d.ellipse([cx - 4, cy - 3, cx - 2, cy - 1], fill=255)
-            d.ellipse([cx + 2, cy - 3, cx + 4, cy - 1], fill=255)
-
-
-# ─── pages (bitmap) ──────────────────────────────────────────────
-
-class Page:
-    name = "Page"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        pass
-
-
-def _alert_icon(d, x, y, kind):
-    """Small severity glyph: bang for failures, tick for successes, dot for info."""
-    if kind == "fail":
-        # narrow bar + separated dot, or the two merge into a solid block
-        d.rectangle([x + 2, y, x + 3, y + 5], fill=255)
-        d.rectangle([x + 2, y + 7, x + 3, y + 8], fill=255)
-    elif kind == "ok":
-        d.line([(x, y + 5), (x + 3, y + 8)], fill=255)
-        d.line([(x + 3, y + 8), (x + 7, y + 1)], fill=255)
-    else:
-        d.rectangle([x + 2, y + 3, x + 4, y + 5], fill=255)
-
-
-class MascotPage(Page):
-    """Rich mascot dashboard: animated mascot on the left, detailed stats on the right.
-
-    The right panel shows context-sensitive data for the displayed source:
-      PC:     CPU%, RAM%, disk, temp, uptime
-      CLAW:   running/ok/fail agents, gateway status, last task
-      CODEX:  activity status, last session age
-    B3 tap on this page cycles the displayed source; the auto-selected source
-    is still used for RGB and override behaviour.
-    """
-
-    name = "Mascot"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        mascot = ctx["mascot"]
-        src = ctx.get("display_source") or ctx["active_source"]
-        mood = ctx["mood"]
-        active = ctx["active_source"]
-
-        # Draw mascot with activity flares if busy
-        mascot.draw(d, src["key"], 29, 18, mood, busy=ctx.get("busy", False))
-
-        # Ground line with source colour hint
-        d.line([(6, 38), (52, 38)], fill=255)
-        # Column separator
-        d.line([(58, 1), (58, 41)], fill=255)
-
-        gfx.page_dots(d)
-
-        # Header: source name (left) + live clock just left of the page dots.
-        # page_dots occupy x=135..155 (y=4..6), so the clock is anchored at x<130
-        # to leave a clear gap and never overlap the dots or the source label.
-        gfx.text(d, (63, 0), src["label"])
-        cw = d.textlength("00:00", font=gfx.font_small)
-        gfx.text(d, (128 - int(cw), 0), time.strftime("%H:%M"), small=True)
-
-        # Mood indicator: small expression label above ground line
-        mood_labels = {"idle": "---", "watch": "WATCH", "focus": "FOCUS",
-                       "happy": "OK!", "worried": "WARN", "alarm": "ALERT"}
-        mood_icon = mood_labels.get(mood, mood)
-        gfx.text(d, (5, 34), mood_icon, small=True)
-
-        # Source-specific detail panel (rows 13-38)
-        key = src["key"]
-
-        if key == "pc":
-            # PC detail: CPU/RAM/disk bars + temp + uptime
-            y = 13
-            for label, pct in (("CPU", st.get("cpu", 0)),
-                               ("RAM", st.get("mem", 0)),
-                               ("DSK", st.get("disk", 0))):
-                gfx.text(d, (63, y), f"{label} {pct:5.1f}%", small=True)
-                # Color-coded bar: normal(green-ish), warning, critical thresholds
-                gfx.hbar(d, 118, y + 1, 38, 7, pct / 100.0)
-                # Critical threshold markers at 90%
-                if pct > 90:
-                    d.rectangle([118 + int(38 * 0.9), y, 118 + int(38 * 0.9) + 1, y + 9], fill=255)
-                y += 9
-            # Bottom: temp + uptime
-            extras = []
-            temps = st.get("temps", [])
-            if temps:
-                for name, val in temps:
-                    low = name.lower()
-                    if "core" in low or "cpu" in low or "package" in low or "tctl" in low:
-                        extras.append(f"{val:.0f}" + chr(176) + "C")
-                        break
-                if not extras and temps:
-                    extras.append(f"{temps[0][1]:.0f}" + chr(176) + "C")
-            extras.append(fmt_uptime(st.get("uptime", 0)))
-            gfx.text(d, (63, y), "  ".join(extras[:2]), small=True)
-
-        elif key == "openclaw":
-            # OpenClaw detail: gateway, agents, tasks
-            s = oc.snapshot()
-            y = 13
-            # Gateway status with visual indicator
-            gw_up = s.get("online", False)
-            gw = "GW UP" if gw_up else "GW DOWN"
-            agents = s.get("active_agents") or {}
-            n_agents = sum(agents.values())
-            # Filled/hollow gateway indicator
-            if gw_up:
-                d.rectangle([148, y + 1, 155, y + 8], fill=255)
-            else:
-                d.rectangle([148, y + 1, 155, y + 8], outline=255)
-            gfx.text(d, (63, y), f"{gw}  AG{n_agents}", small=True)
-            y += 10
-            # Task stats with visual ok/fail markers
-            ok_count = s.get("ok", 0)
-            fail_count = s.get("fail", 0)
-            # Small bar showing ok vs fail ratio
-            total_tasks = ok_count + fail_count
-            if total_tasks > 0:
-                ok_pct = ok_count / total_tasks
-                # Draw a thin bar: filled = ok ratio, outline = full scale
-                d.rectangle([63, y + 1, 63 + int(92 * ok_pct), y + 8], fill=255)
-                d.rectangle([63, y + 1, 155, y + 8], outline=255)
-                gfx.text(d, (63, y), f"ok {ok_count}  fail {fail_count}", small=True)
-            else:
-                d.rectangle([63, y + 1, 155, y + 8], outline=255)
-                gfx.text(d, (63, y), "no tasks yet", small=True)
-            y += 10
-            # Last task or agent types
-            if s.get("last_task"):
-                status_icon = "v" if s.get("last_task_status") in TERMINAL_OK else "x"
-                gfx.text(d, (63, y), f"{status_icon} {clip(s['last_task'], 20)}", small=True)
-                y += 8
-            if agents:
-                types = " ".join(f"{RUNTIME_TAG.get(k, k.upper())}:{v}" for k, v in sorted(agents.items()))
-                gfx.text(d, (63, y), clip(types, 24), small=True)
-            else:
-                poll = age_str(s["last_poll_ok"]) if s.get("last_poll_ok") else "--"
-                gfx.text(d, (63, y), f"poll {poll}", small=True)
-
-        elif key == "codex":
-            # Codex detail: activity, session, gateway
-            s = oc.snapshot()
-            y = 13
-            # Activity indicator with pulsing dot
-            if s.get("codex_active"):
-                gfx.text(d, (63, y), "ACTIVE", small=True)
-                if int(time.time() * 2) % 2 == 0:
-                    d.rectangle([150, y + 1, 156, y + 7], fill=255)
-                else:
-                    d.rectangle([150, y + 1, 156, y + 7], outline=255)
-            elif s.get("codex_seen"):
-                age = age_str(s.get("codex_mtime", 0))
-                gfx.text(d, (63, y), f"last {age} ago", small=True)
-            else:
-                gfx.text(d, (63, y), "not found", small=True)
-            y += 10
-            if s.get("codex_last"):
-                gfx.text(d, (63, y), clip(s["codex_last"], 24), small=True)
-                y += 10
-            # Gateway + codex status
-            gw = "GW UP" if s.get("online") else "GW DOWN"
-            codex_state = "scanning" if s.get("codex_active") else "idle"
-            gfx.text(d, (63, y), f"{gw}  {codex_state}", small=True)
-
-        # Status line: arrow to active source if different, or BUSY/OK/OFF
-        if src["key"] != active["key"]:
-            gfx.text(d, (63, 38), f"<-{active['label']}", small=True)
-        else:
-            state = "BUSY" if src["busy"] else ("OK" if src["online"] else "OFF")
-            gfx.text(d, (63, 38), state, small=True)
-
-
-class SourcesPage(Page):
-    """Source overview: mini mascots, metric, status, and activity bars."""
-
-    name = "Sources"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        srcs = ctx["sources"]
-        n_up = sum(1 for s in srcs if s["online"])
-        gfx.frame(d, "SOURCES", f"{n_up}/{len(srcs)} up {time.strftime('%H:%M')}")
-        mascot = ctx["mascot"]
-        s = oc.snapshot()
-
-        for i, src in enumerate(srcs):
-            x0 = 2 + i * 53
-            cx = x0 + 26
-            # Mini mascot
-            mascot.draw_mini(d, src["key"], cx, 17, src["busy"])
-            # Name centered, metric + status below
-            w = d.textlength(src["label"], font=gfx.font_small)
-            gfx.text(d, (int(cx - w / 2), 27), src["label"], small=True)
-            # Left metric per source (CPU%, agents, codex age)
-            if src["key"] == "pc":
-                gfx.text(d, (x0 + 1, 35), f"{st.get('cpu', 0):.0f}%", small=True)
-            elif src["key"] == "openclaw":
-                n_ag = sum((s.get("active_agents") or {}).values())
-                gfx.text(d, (x0 + 1, 35), f"AG{n_ag}", small=True)
-            else:
-                age = age_str(s.get("codex_mtime", 0)) if s.get("codex_seen") else "--"
-                gfx.text(d, (x0 + 1, 35), age, small=True)
-            # Status word on the right (RUN/OK/OFF)
-            if src["busy"]:
-                gfx.text(d, (x0 + 28, 35), "RUN", small=True)
-            elif src["online"]:
-                gfx.text(d, (x0 + 26, 35), "OK", small=True)
-            else:
-                gfx.text(d, (x0 + 25, 35), "OFF", small=True)
-            # Activity bar at bottom
-            bar_y = 42
-            bar_w = 49
-            d.rectangle([x0, bar_y - 1, x0 + bar_w, bar_y], outline=255)
-            if src["busy"]:
-                # Animated fill for busy
-                phase = int(time.time() * 8) % bar_w
-                d.rectangle([x0 + 1, bar_y - 1, x0 + 1 + phase, bar_y], fill=255)
-            elif src["online"]:
-                # Steady small fill for online
-                d.rectangle([x0 + 1, bar_y - 1, x0 + 6, bar_y], fill=255)
-
-
-class SystemPage(Page):
-    """System dashboard: CPU/RAM/disk bars, temp, freq, memory detail, top process."""
-
-    name = "System"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        uptime = fmt_uptime(st.get("uptime", 0))
-        # Right-align uptime in header using page_dots gap
-        gfx.frame(d, "SYSTEM", uptime)
-        y = 13
-        for label, pct in (("CPU", st.get("cpu", 0)),
-                           ("RAM", st.get("mem", 0)),
-                           ("DSK", st.get("disk", 0))):
-            gfx.text(d, (3, y), f"{label} {pct:5.1f}%", small=True)
-            gfx.hbar(d, 62, y + 1, 95, 8, pct / 100.0)
-            # Critical threshold marker at 90%
-            if pct > 90:
-                x90 = 62 + int(95 * 0.9)
-                d.line([(x90, y), (x90, y + 9)], fill=255)
-            y += 10
-        # Detail row 1: temp + freq
-        extras = []
-        temps = st.get("temps", [])
-        if temps:
-            for name, val in temps:
-                low = name.lower()
-                if "core" in low or "cpu" in low or "package" in low or "tctl" in low:
-                    extras.append(f"{val:.0f}" + chr(176) + "C")
-                    break
-            if not extras and temps:
-                extras.append(f"{temps[0][1]:.0f}" + chr(176) + "C")
-        freq = st.get("cpu_freq", 0)
-        if freq:
-            # Show freq in GHz if > 1000
-            extras.append(f"{freq / 1000:.1f}GHz" if freq > 1000 else f"{freq:.0f}MHz")
-        if extras:
-            gfx.text(d, (3, y), "  ".join(extras), small=True)
-        y += 9
-        # Detail row 2: memory usage + top process
-        mem_used = st.get("mem_used", 0)
-        mem_total = st.get("mem_total", 0)
-        mem_str = f"{fmt_bytes(mem_used)}/{fmt_bytes(mem_total)}" if mem_total else ""
-        top = (st.get("top") or [])
-        top_str = clip(top[0].get("name", ""), 10) if top else ""
-        detail = "  ".join(filter(None, [mem_str, top_str]))
-        if detail:
-            gfx.text(d, (3, y), detail, small=True)
-
-
-class NetworkPage(Page):
-    """Network dashboard: speeds, totals, peak, sparkline with scale."""
-
-    name = "Network"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        # Calculate peak from sparkline history
-        peak_dn = max(NET_HIST) / 1024.0 if NET_HIST else 0.0  # MB/s
-        gfx.frame(d, "NETWORK", f"tot {fmt_bytes(st.get('net_recv', 0))}")
-        # Current speeds
-        gfx.text(d, (3, 13), f"DN {fmt_speed(st.get('net_dn', 0))}", small=True)
-        gfx.text(d, (3, 23), f"UP {fmt_speed(st.get('net_up', 0))}", small=True)
-        # Peak + sent
-        peak_str = f"pk {fmt_speed(peak_dn)}" if peak_dn > 0 else ""
-        sent_str = f"sent {fmt_bytes(st.get('net_sent', 0))}"
-        if peak_str:
-            gfx.text(d, (3, 33), f"{peak_str}  {sent_str}", small=True)
-        else:
-            gfx.text(d, (3, 33), sent_str, small=True)
-        # Sparkline with scale labels
-        gfx.sparkline(d, 86, 14, 71, 24, NET_HIST)
-        # Scale labels at sparkline boundaries
-        if NET_HIST:
-            max_val = max(NET_HIST) / 1024.0  # MB/s
-            gfx.text(d, (86, 39), fmt_speed(max_val), small=True)
-            gfx.text(d, (145, 39), "0", small=True)
-
-
-class ProcsPage(Page):
-    """Process viewer: top processes by CPU with memory and process count."""
-
-    name = "Procs"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        n_procs = st.get("procs", "?")
-        gfx.frame(d, "PROCESSES", f"{n_procs} running")
-        procs = (st.get("top") or [])
-        if not procs:
-            gfx.text(d, (3, 20), "sampling...", small=True)
-            return
-        y = 13
-        for p in procs[:3]:
-            n = clip(p.get("name") or "?", 13)
-            c = p.get("cpu_percent", 0) or 0
-            m = p.get("memory_percent", 0) or 0
-            gfx.text(d, (3, y), n, small=True)
-            # CPU% right-aligned + memory% next to it
-            cpu_str = f"{c:.0f}%"
-            gfx.text(d, (80, y), cpu_str, small=True)
-            # Memory as small text
-            gfx.text(d, (106, y), f"m{m:.0f}", small=True)
-            # CPU bar (visual)
-            gfx.hbar(d, 122, y + 1, 35, 8, min(1.0, c / 100.0), outline=True)
-            y += 10
-
-
-class OpenClawPage(Page):
-    """OpenClaw dashboard: agent counts by type, gateway status, last task detail."""
-
-    name = "OpenClaw"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        s = oc.snapshot()
-        gw = "GW UP" if s["online"] else "GW DOWN"
-        gfx.frame(d, "OPENCLAW", gw)
-        if s["online"]:
-            agents = s.get("active_agents") or {}
-            n_agents = sum(agents.values())
-            y = 13
-            # Agent counts with type breakdown
-            gfx.text(d, (3, y), f"run {n_agents}  ok {s['ok']}  fail {s['fail']}", small=True)
-            y += 10
-            # Active agent types
-            if agents:
-                types = "  ".join(f"{RUNTIME_TAG.get(k, k.upper())}:{v}"
-                                  for k, v in sorted(agents.items()))
-                gfx.text(d, (3, y), clip(types, 26), small=True)
-            else:
-                gfx.text(d, (3, y), "idle", small=True)
-            y += 10
-            # Last task
-            if s.get("last_task"):
-                status_icon = "v" if s.get("last_task_status") in TERMINAL_OK else "x"
-                gfx.text(d, (3, y), f"{status_icon} {clip(s['last_task'], 23)}", small=True)
-            else:
-                poll = age_str(s["last_poll_ok"]) if s.get("last_poll_ok") else "--"
-                gfx.text(d, (3, y), f"poll {poll}", small=True)
-            # Connection quality dot
-            poll = age_str(s.get("last_poll_ok", 0)) if s.get("last_poll_ok") else "--"
-            gfx.text(d, (110, 0), poll, small=True)
-        else:
-            gfx.text(d, (3, 15), "bridge offline", small=True)
-            gfx.text(d, (3, 25), "wsl lcd-probe", small=True)
-            gfx.text(d, (3, 35), "not responding", small=True)
-
-
-class AlertsPage(Page):
-    """Alert feed: system and agent alerts with severity icons."""
-
-    name = "Alerts"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        s = oc.snapshot()
-        items = []          # (ts, kind, text)
-        now = time.time()
-        if st.get("cpu", 0) > 90:
-            items.append((now, "fail", f"CPU HIGH {st['cpu']:.0f}%"))
-        if st.get("mem", 0) > 90:
-            items.append((now, "fail", f"RAM HIGH {st['mem']:.0f}%"))
-        if st.get("disk", 0) > 95:
-            items.append((now, "fail", f"DISK {st['disk']:.0f}%"))
-        for ts, kind, text in s["alerts"][-6:]:
-            items.append((ts, kind, text))
-
-        if not items:
-            gfx.frame(d, "ALERTS", "clear")
-            gfx.text(d, (3, 15), "all systems ok", small=True)
-            n_agents = sum((s.get("active_agents") or {}).values())
-            gfx.text(d, (3, 25), f"agents {s['ok']} ok {s['fail']} fail  AG{n_agents}", small=True)
-            return
-
-        gfx.frame(d, f"ALERTS ({len(items)})", time.strftime("%H:%M"))
-        y = 13
-        for ts, kind, text in items[-3:]:
-            _alert_icon(d, 2, y + 1, kind)
-            gfx.text(d, (12, y), f"{clip(text, 23)} {age_str(ts)}", small=True)
-            y += 10
-
-
-class StatusPage(Page):
-    """B3 overview: CPU/RAM/disk, temp/freq, gateway, agents, Codex, network.
-
-    Shows for 8 seconds then returns to the current page.
-    """
-
-    name = "Status"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        s = oc.snapshot()
-        gfx.frame(d, "OVERVIEW", time.strftime("%H:%M"))
-        y = 13
-        # CPU / RAM / DSK bars
-        for label, pct in (("CPU", st.get("cpu", 0)),
-                           ("RAM", st.get("mem", 0)),
-                           ("DSK", st.get("disk", 0))):
-            gfx.text(d, (3, y), f"{label} {pct:5.1f}%", small=True)
-            gfx.hbar(d, 62, y + 1, 70, 8, pct / 100.0)
-            y += 10
-
-        # CPU temperature if available (via psutil)
-        temps = st.get("temps", [])
-        temp_str = ""
-        if temps:
-            # Use first CPU/package temperature
-            for name, val in temps:
-                low = name.lower()
-                if "core" in low or "cpu" in low or "package" in low or "tctl" in low:
-                    temp_str = f" {val:.0f}" + chr(176) + "C"
-                    break
-            if not temp_str:
-                temp_str = f" {temps[0][1]:.0f}" + chr(176) + "C"
-        gfx.text(d, (135, 13), clip(temp_str, 8), small=True)
-
-        # Gateway status (openclaw online/offline)
-        gw_status = "GW UP" if s.get("online") else "GW DOWN"
-        gw_color_hint = "ok" if s.get("online") else "fail"
-        # Small indicator: filled dot = up, empty dot = down
-        if s.get("online"):
-            d.ellipse([148, y + 2, 154, y + 8], fill=255)   # filled green dot
-        else:
-            d.ellipse([148, y + 2, 154, y + 8], outline=255)  # hollow red dot
-
-        agents_count = sum((s.get("active_agents") or {}).values())
-        agent_str = f"AG{agents_count}" if agents_count else "AG0"
-        gw_str = f"{gw_status} {agent_str}"
-        gfx.text(d, (3, y), clip(gw_str, 20), small=True)
-        y += 10
-
-        # Codex line
-        if s.get("codex_active"):
-            codex = "CODEX active"
-        elif s.get("codex_mtime"):
-            codex = f"CODEX {age_str(s['codex_mtime'])} ago"
-        else:
-            codex = "CODEX n/a"
-        gfx.text(d, (3, y), clip(codex, 25), small=True)
-
-
-class DownloadPage(Page):
-    name = "Download"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        s = dl.snapshot()
-        gfx.frame(d, "DOWNLOADING", fmt_speed(s["speed"]))
-        gfx.stripes(d, 2, 15, 156, 12, time.time() * 26)
-        if int(time.time()) % 2 == 0:
-            gfx.text(d, (3, 30), f"{clip(s['name'] or 'download', 11)} {fmt_bytes(s['total_mb'])}", small=True)
-        else:
-            gfx.text(d, (3, 30), clip(s["file"] or f"{int(s['elapsed'])}s elapsed", 25), small=True)
-
-
-class VPSPage(Page):
-    """VPS dashboard: remote server stats via SSH with connection quality indicator.
-
-    Shows CPU/RAM/disk with bars, uptime, and top processes when connected.
-    When offline: shows retry count and SSH error status.
-    """
-
-    name = "VPS"
-
-    def render(self, gfx, d, st, oc, dl, ctx):
-        vps = ctx.get("vps_snapshot", {})
-        online = vps.get("online", False)
-        host = vps.get("host", "?")
-
-        if not online:
-            if vps.get("fail_count", 0) >= 3:
-                label = "VPS OFFLINE"
-            else:
-                label = "VPS CONNECT..."
-            gfx.frame(d, "VPS", label)
-            gfx.text(d, (3, 15), clip(host, 20), small=True)
-            # Red X indicator
-            d.line([(148, 3), (155, 10)], fill=255)
-            d.line([(148, 10), (155, 3)], fill=255)
-            retries = vps.get("fail_count", 0)
-            gfx.text(d, (3, 25), f"retries {retries}", small=True)
-            gfx.text(d, (3, 35), "SSH failed", small=True)
-            return
-
-        # Green connection indicator (solid bar)
-        d.rectangle([148, 3, 156, 9], fill=255)
-
-        gfx.frame(d, "VPS", vps.get("uptime", "?"))
-        y = 13
-        for label, pct in (("CPU", vps.get("cpu", 0)),
-                           ("RAM", vps.get("ram", 0)),
-                           ("DSK", vps.get("disk", 0))):
-            gfx.text(d, (3, y), f"{label} {pct:5.1f}%", small=True)
-            gfx.hbar(d, 62, y + 1, 95, 8, pct / 100.0)
-            y += 10
-
-        procs = vps.get("top_procs", [])
-        if procs:
-            for name, cpu_p in procs[:3]:
-                n = clip(name, 14)
-                gfx.text(d, (3, y), n, small=True)
-                gfx.text(d, (105, y), f"{cpu_p:5.1f}%", small=True)
-                y += 8
-
-
-
-# ─── app ─────────────────────────────────────────────────────────
 
 class LCDGlance:
+    """Main application: owns hardware, monitors, pages, and the render loop."""
+
     def __init__(self):
+        # Hardware
         self.lcd = LCDController()
         self.led = LEDController()
+
+        # Data sources
         self.oc = OpenClawMonitor()
         self.dl = DownloadDetector()
         self.vps = VPSMonitor()
+
+        # Rendering
         self.gfx = Gfx()
-        self.mascot = MascotRenderer(self.gfx)
+        self.sprites = create_default_sprites()
+        self.mascot = MascotRenderer(self.gfx, sprites=self.sprites)
+
+        # Animation engine
+        self.anim = AnimationController()
+        self.scene = None  # initialised after pages
+        self.transition = TransitionEngine()
+        self.toast = ToastManager()
+        self.buttons = None  # initialised after LCD connect
+        self.screensaver = ScreensaverPage()
+        self.quickmenu = QuickMenuPage()
+
+        # RGB
         self.rgb = None
+
+        # Pages
         self.pages = [MascotPage(), SourcesPage(), SystemPage(), NetworkPage(),
                       ProcsPage(), OpenClawPage(), AlertsPage()]
         if self.vps.enabled:
@@ -2063,26 +134,22 @@ class LCDGlance:
         self.mascot_page = self.pages[0]
         self.status_page = StatusPage()
         self.dl_page = DownloadPage()
-        self.page = 0
-        self.prev_buttons = 0
+
+        # Scene director
+        self.scene = SceneDirector(self.pages, self.mascot_page, self.dl_page, self.status_page)
+
+        # State
         self.running = False
-        # button press/hold state
-        self._press_start = {}     # button bit -> pressed-at timestamp
-        self._hold_fired = set()   # buttons whose hold already fired this press
-        self._btn_ts = 0.0
-        self.status_until = 0.0
-        self.flash_until = 0.0
         self._last_bitmap = None
         self._last_submit = 0.0
         self._last_render = 0.0
-        self._override = None      # {"page": obj|None, "until": ts, "kind": str}
-        self._dl_was_active = False
-        self._ev_seen = 0.0
-        self._display_source = None  # None = auto (follows active source)
+        self._in_screensaver = False
+        self._in_quickmenu = False
+        self._last_input = time.time()
 
     # ---- lifecycle
     def start(self):
-        print("LCDGlance v8.0 — live clock + rich dashboard", flush=True)
+        print("LCDGlance v9.0 — G510 mascots + RGB + animations + sprites", flush=True)
         print("=" * 60, flush=True)
 
         if not HAS_PIL:
@@ -2095,6 +162,7 @@ class LCDGlance:
         self.lcd.connect()
         self.led.connect()
         self.rgb = RGBEngine(self.led, self.oc, self.dl, self.vps)
+        self.buttons = ButtonHandler(self.lcd)
 
         if not self.lcd.connected and not self.led.connected:
             print("[!] No Logitech devices. Is LGS running?", flush=True)
@@ -2106,7 +174,8 @@ class LCDGlance:
 
         self.running = True
         print(f"Pages: {[p.name for p in self.pages]}", flush=True)
-        print("B1/B2 pages  B3 cycle/overview  B4 flash/alert", flush=True)
+        print("B1/B2 pages  B3 scouter  B4 flash  B3+B4 menu  B1+B2 cycle", flush=True)
+        print("Animations: controller + scene director + transitions + toasts + sprites", flush=True)
         if self.vps.enabled:
             print(f"VPS: {self.vps.user}@{self.vps.host} (poll {self.vps.poll_interval}s)", flush=True)
         else:
@@ -2128,13 +197,14 @@ class LCDGlance:
             self.stop()
 
     def _splash(self):
+        """Show a startup splash screen for 2 seconds."""
         img, d = self.gfx.canvas()
         self.mascot.draw(d, "openclaw", 28, 21, "happy")
-        self.gfx.text(d, (56, 6), "LCDGlance v7")
+        self.gfx.text(d, (56, 6), "LCDGlance v9")
         self.gfx.text(d, (56, 20), "PC / CLAW / CODEX", small=True)
-        self.gfx.text(d, (56, 31), "agent alerts", small=True)
+        self.gfx.text(d, (56, 31), "sprites + toasts", small=True)
         if self.lcd.connected:
-            self.lcd.set_bitmap(img)
+            self.lcd.submit(to_mono_bytes(img))
             self.lcd.update()
             time.sleep(2.0)
 
@@ -2153,7 +223,6 @@ class LCDGlance:
                 except Exception:
                     pass
             except Exception:
-                # a bad poll must not kill the thread
                 traceback.print_exc()
                 time.sleep(1.0)
 
@@ -2183,203 +252,259 @@ class LCDGlance:
                 traceback.print_exc()
                 time.sleep(1.0)
 
-    # ---- auto-focus (the "smart" part)
-    def _update_override(self, now):
-        s = self.oc.snapshot()
-        ev = s.get("last_event")
-
-        # an agent finished -> jump to its mascot reacting for a few seconds
-        if ev and ev["ts"] != self._ev_seen:
-            self._ev_seen = ev["ts"]
-            self._override = {"page": self.mascot_page, "until": now + 8.0,
-                              "kind": "event"}
-
-        # download running -> show download view until it ends
-        if self.dl.active:
-            self._dl_was_active = True
-            self._override = {"page": self.dl_page, "until": now + 1.5,
-                              "kind": "download"}
-        elif self._dl_was_active:
-            self._dl_was_active = False
-            if self._override and self._override["kind"] == "download":
-                self._override = {"page": self.mascot_page, "until": now + 4.0,
-                                  "kind": "event"}
-
-        if self._override and now > self._override["until"]:
-            self._override = None
-
-    # ---- main loop
-    def _loop(self):
-        reconnect_at = kill_at = 0.0
-        while self.running:
-            try:
-                now = time.time()
-                if now - reconnect_at > LCD_CHECK_INTERVAL:
-                    self.lcd.ensure_connected()
-                    reconnect_at = now
-                # LGS only spawns its LCD applets on demand, so sweeping rarely is
-                # enough — and each sweep spawns six taskkill processes.
-                if now - kill_at > 300:
-                    kill_lcd_applets()
-                    kill_at = now
-
-                st = get_system_stats()
-                self._check_buttons()
-                self._update_override(now)
-
-                sources = build_sources(st, self.oc, self.dl)
-                active = pick_active(sources)
-                # computed every tick: the RGB engine needs it even on frames the
-                # render gate skips, and it is cheap (both snapshots are cached)
-                busy = is_busy(st, self.oc, self.dl, active)
-                if self.rgb:
-                    self.rgb.active_source_key = active["key"]
-                    self.rgb.busy = busy
-
-                if self.lcd.connected:
-                    if now < self.flash_until:
-                        page = self.pages[self.page]
-                    elif now < self.status_until:
-                        page = self.status_page
-                    elif self._override and self._override["page"]:
-                        page = self._override["page"]
-                    else:
-                        page = self.pages[self.page]
-                    animated = (page is self.mascot_page or page is self.dl_page
-                                or now < self.flash_until or now < self.status_until)
-                    # Bars & sparklines read better with a modest refresh; pure
-                    # text pages can stay slow to save LCD round-trips.
-                    if animated:
-                        interval = ANIM_INTERVAL
-                    elif page is self.pages[1]:   # Sources (animated activity bar)
-                        interval = ANIM_INTERVAL
-                    else:
-                        interval = STATIC_INTERVAL
-                    self.gfx.dots = (self.page, len(self.pages))
-                    if now - self._last_render >= interval:
-                        self._last_render = now
-                        # Compute display source for mascot page:
-                        # auto-follow active source unless user cycled with B3
-                        if self._display_source:
-                            display = next(
-                                (s for s in sources if s["key"] == self._display_source),
-                                active)
-                        else:
-                            display = active
-                        ctx = {"mascot": self.mascot, "sources": sources,
-                               "active_source": active,
-                               "display_source": display,
-                               "mood": mood_for(st, self.oc, self.dl, active),
-                               "busy": busy,
-                               "vps_snapshot": self.vps.snapshot()}
-                        img, d = self.gfx.canvas()
-                        page.render(self.gfx, d, st, self.oc, self.dl, ctx)
-                        if now < self.flash_until:
-                            img = ImageOps.invert(img)     # full-screen white flash
-                        data = to_mono_bytes(img)
-                        # never re-send an identical frame: the LCD SDK round-trip is
-                        # the most expensive thing left in the loop
-                        if data != self._last_bitmap or now - self._last_submit > RESUBMIT_AFTER:
-                            self.lcd.submit(data)
-                            self._last_bitmap = data
-                            self._last_submit = now
-
-                if self.rgb:
-                    self.rgb.update(st, self.page)
-
-                time.sleep(UPDATE_INTERVAL)
-            except Exception:
-                # never let one bad tick kill the panel: an
-                # UnboundLocalError once took the whole app down
-                traceback.print_exc()
-                time.sleep(1.0)
-
-    def _check_buttons(self):
-        """Button matrix with tap vs long-press (hold) semantics.
-
-        B1: prev page          B2: next page          (hold B1/B2 = fast-scroll)
-        B3 tap:  cycle source (mascot page) / overview overlay (other pages)
-        B3 hold: overview overlay + refresh (always)
-        B4 tap:  white flash + toggle manual RGB alert
-        B4 hold: toggle night-dim (dim RGB lighting)
-        """
-        now = time.time()
-        cur = 0
-        for b in (BTN_1, BTN_2, BTN_3, BTN_4):
-            if self.lcd.button(b):
-                cur |= b
-
-        # Track newly-pressed edges and maintain a press-start timestamp for
-        # long-press detection. A "hold" is a button still down after HOLD_MS.
-        new = cur & ~self.prev_buttons
-        released = self.prev_buttons & ~cur
-        self.prev_buttons = cur
-
-        # Update press timers: first seen edge records start time
-        for b in (BTN_1, BTN_2, BTN_3, BTN_4):
-            if new & b:
-                self._press_start[b] = now
-            elif released & b:
-                # A completed tap (short press)
-                held = now - self._press_start.get(b, now)
-                self._press_start.pop(b, None)
-                self._hold_fired.discard(b)
-                self._handle_tap(b, held)
-        # Long-press firing: fire once per held button while still down
-        for b in (BTN_1, BTN_2, BTN_3, BTN_4):
-            if cur & b and self._press_start.get(b) is not None:
-                if b not in self._hold_fired and now - self._press_start[b] >= HOLD_MS:
-                    self._hold_fired.add(b)
-                    self._handle_hold(b)
-
-    def _handle_tap(self, btn, held):
-        """Short press action."""
-        if held > HOLD_MS:
-            return   # treated as a hold, not a tap
-        if btn == BTN_1:
-            self.page = (self.page - 1) % len(self.pages)
-        elif btn == BTN_2:
-            self.page = (self.page + 1) % len(self.pages)
-        elif btn == BTN_3:
-            if self.page == 0:  # mascot page -> cycle source
-                src_keys = ["pc", "openclaw", "codex"]
-                try:
-                    idx = src_keys.index(self._display_source) + 1
-                except (ValueError, AttributeError):
-                    idx = 0
-                self._display_source = src_keys[idx % len(src_keys)]
-            else:                # other pages -> overview overlay
-                threading.Thread(target=self._safe_poll, daemon=True).start()
-                self.status_until = time.time() + 8.0
-        elif btn == BTN_4:
-            self.flash_until = time.time() + 0.7
-            if self.rgb:
-                self.rgb.manual_alert = not self.rgb.manual_alert
-                if not self.rgb.manual_alert:
-                    self.led.stop_effects()
-
-    def _handle_hold(self, btn):
-        """Long-press action (fires once, while still held)."""
-        if btn == BTN_1:
-            # hold prev = jump to first page
-            self.page = 0
-        elif btn == BTN_2:
-            # hold next = jump to last page
-            self.page = len(self.pages) - 1
-        elif btn == BTN_3:
-            # hold = overview + forced refresh (always)
-            threading.Thread(target=self._safe_poll, daemon=True).start()
-            self.status_until = time.time() + 10.0
-        elif btn == BTN_4:
-            # hold = toggle night-dim RGB
-            if self.rgb:
-                self.rgb.night_override = not getattr(self.rgb, "night_override", False)
-
     def _safe_poll(self):
         try:
             self.oc.poll()
         except Exception:
             pass
+
+    # ---- main loop
+    def _loop(self):
+        reconnect_at = kill_at = 0.0
+
+        while self.running:
+            try:
+                now = time.time()
+
+                # Periodic LCD reconnection check
+                if now - reconnect_at > LCD_RECONNECT:
+                    self.lcd.ensure_connected()
+                    reconnect_at = now
+
+                # Periodic LGS applet sweep
+                if now - kill_at > APP_KILL_INTERVAL:
+                    kill_lcd_applets()
+                    kill_at = now
+
+                # Collect system stats
+                st = get_system_stats()
+
+                # Process buttons
+                if self.buttons:
+                    actions = self.buttons.poll(now)
+                    for action, param in actions:
+                        self._last_input = now
+                        self.screensaver.feed_input(now)
+
+                        if self._in_quickmenu:
+                            if action == "prev":
+                                self.quickmenu.prev_item()
+                            elif action == "next":
+                                self.quickmenu.next_item()
+                            elif action == "status_tap":
+                                # Select current menu item
+                                act = self.quickmenu.select()
+                                self._in_quickmenu = False
+                                self._execute_menu_action(act, st)
+                            elif action == "flash_tap":
+                                self._in_quickmenu = False
+                            continue
+
+                        # Normal button handling
+                        if action == "prev":
+                            old_page = self.scene.page_index
+                            self.scene.prev_page()
+                            self._start_transition_if_page_changed(old_page)
+                        elif action == "next":
+                            old_page = self.scene.page_index
+                            self.scene.next_page()
+                            self._start_transition_if_page_changed(old_page)
+                        elif action == "status_tap":
+                            threading.Thread(target=self._safe_poll, daemon=True).start()
+                            self.scene.show_status(5.0)
+                            self.anim.push(AnimState.WORKING, 5.0)
+                        elif action == "status_hold":
+                            threading.Thread(target=self._safe_poll, daemon=True).start()
+                            self.scene.show_status(8.0)
+                            self.anim.push(AnimState.ALERT, 8.0)
+                        elif action == "flash_tap":
+                            self.scene.flash(0.7)
+                            if self.rgb:
+                                self.rgb.manual_alert = not self.rgb.manual_alert
+                                if not self.rgb.manual_alert:
+                                    self.led.stop_effects()
+                        elif action == "flash_hold":
+                            self.scene.flash(1.5)
+                            self.anim.push(AnimState.ALERT, 1.5)
+                        elif action == "combo_12":
+                            # Quick cycle through pages
+                            for _ in range(3):
+                                self.scene.next_page()
+                        elif action == "combo_34":
+                            # Open quick menu
+                            self._in_quickmenu = True
+                            self.quickmenu.build_menu(st, self.oc, self.dl, self.vps)
+
+                # Check screensaver timeout
+                if not self._in_quickmenu:
+                    if self._in_screensaver:
+                        # Any recent input exits screensaver
+                        if now - self.screensaver.last_input < 2.0:
+                            self._in_screensaver = False
+                    elif self.screensaver.should_show:
+                        self._in_screensaver = True
+
+                # Update scene (auto-focus for downloads, agent events)
+                self.scene.update(now, self.oc, self.dl)
+
+                # Build context
+                sources = build_sources(st, self.oc, self.dl)
+                active = pick_active(sources)
+                load = load_index(st, self.oc, self.dl)
+                busy = is_busy(st, self.oc, self.dl, active)
+
+                # Check for mascot interaction (two sources active)
+                interaction = find_interaction(sources)
+                oc_snap = self.oc.snapshot()
+                ev = oc_snap.get("last_event")
+                interaction_trigger = None
+                if ev and (now - ev["ts"]) < 3.0:
+                    interaction_trigger = "success" if ev["kind"] == "ok" else "failure"
+
+                # Advance animation controller
+                anim_state = self.anim.tick(now)
+
+                # Update RGB
+                if self.rgb:
+                    self.rgb.active_source_key = active["key"]
+                    self.rgb.busy = busy
+                    self.rgb.update(st, self.scene.page_index)
+
+                # Push toasts for notable events
+                if ev and (now - ev["ts"]) < 2.0:
+                    if ev["kind"] == "ok":
+                        self.toast.push(f"OK: {clip(ev.get('label', ''), 20)}", "ok", 2.5)
+                    else:
+                        self.toast.push(f"FAIL: {clip(ev.get('label', ''), 20)}", "error", 3.0)
+
+                # Render LCD frame
+                if self.lcd.connected:
+                    # Determine which page to render
+                    if self._in_quickmenu:
+                        page = self.quickmenu
+                    elif self._in_screensaver:
+                        page = self.screensaver
+                    else:
+                        page = self.scene.current_page
+
+                    # Determine animation rate
+                    if self._in_screensaver:
+                        fps = 2  # screensaver: very slow
+                    elif self._in_quickmenu:
+                        fps = 4  # menu: static
+                    elif self.scene.is_animated or busy:
+                        fps = FPS_BUSY if anim_state >= AnimState.ALERT else FPS_ANIMATED
+                    else:
+                        fps = FPS_IDLE
+                    interval = 1.0 / fps
+
+                    if now - self._last_render >= interval:
+                        self._last_render = now
+                        self.gfx.dots = (self.scene.page_index, len(self.pages))
+
+                        # Build history buffers context
+                        hist_bufs = {
+                            "cpu": CPU_HIST_BUF.values,
+                            "ram": RAM_HIST_BUF.values,
+                            "disk": DISK_HIST_BUF.values,
+                        }
+
+                        ctx = {
+                            "mascot": self.mascot, "sources": sources,
+                            "active_source": active,
+                            "mood": mood_for(st, self.oc, self.dl, active),
+                            "load": load, "busy": busy,
+                            "vps_snapshot": self.vps.snapshot(),
+                            "hist_bufs": hist_bufs,
+                            "anim_state": anim_state,
+                            "interaction": interaction,
+                            "interaction_trigger": interaction_trigger,
+                        }
+
+                        img, d = self.gfx.canvas()
+                        page.render(self.gfx, d, st, self.oc, self.dl, ctx)
+
+                        # Toast overlay (not in screensaver/quickmenu)
+                        if not self._in_screensaver and not self._in_quickmenu:
+                            self.toast.render(d, self.gfx, now)
+
+                        # Flash overlay (B4)
+                        if now < self.scene.flash_until:
+                            if _ImageOps:
+                                img = _ImageOps.invert(img)
+
+                        data = to_mono_bytes(img)
+
+                        # Transition blending
+                        trans_data = self.transition.render(now)
+                        if trans_data:
+                            data = trans_data
+
+                        # Skip identical frames (biggest optimisation)
+                        if data != self._last_bitmap or now - self._last_submit > RESUBMIT_AFTER:
+                            self.lcd.submit(data)
+                            self._last_bitmap = data
+                            self._last_submit = now
+
+                time.sleep(LOOP_INTERVAL)
+            except Exception:
+                traceback.print_exc()
+                time.sleep(1.0)
+
+    def _start_transition_if_page_changed(self, old_index):
+        """If the page changed, start a transition animation."""
+        new_index = self.scene.page_index
+        if new_index != old_index and self.lcd.connected and self._last_bitmap:
+            st = get_system_stats()
+            sources = build_sources(st, self.oc, self.dl)
+            active = pick_active(sources)
+            load = load_index(st, self.oc, self.dl)
+            busy_flag = is_busy(st, self.oc, self.dl, active)
+            self.gfx.dots = (new_index, len(self.pages))
+            hist_bufs = {
+                "cpu": CPU_HIST_BUF.values,
+                "ram": RAM_HIST_BUF.values,
+                "disk": DISK_HIST_BUF.values,
+            }
+            ctx = {
+                "mascot": self.mascot, "sources": sources,
+                "active_source": active,
+                "mood": mood_for(st, self.oc, self.dl, active),
+                "load": load, "busy": busy_flag,
+                "vps_snapshot": self.vps.snapshot(),
+                "hist_bufs": hist_bufs,
+                "anim_state": AnimState.TRANSITION,
+                "interaction": None, "interaction_trigger": None,
+            }
+            img_new, d_new = self.gfx.canvas()
+            self.scene.current_page.render(self.gfx, d_new, st, self.oc, self.dl, ctx)
+            new_data = to_mono_bytes(img_new)
+            self.transition.start(self._last_bitmap, new_data)
+
+    def _execute_menu_action(self, action, st):
+        """Execute a quick menu action."""
+        if action == "poll":
+            threading.Thread(target=self._safe_poll, daemon=True).start()
+            self.toast.push("Polling OpenClaw...", "info", 2.0)
+        elif action == "restart_gw":
+            # Would need subprocess to restart OpenClaw
+            self.toast.push("Restart not yet wired", "warn", 2.0)
+        elif action == "taskmgr":
+            import subprocess
+            subprocess.Popen(["taskmgr.exe"], creationflags=0x08000000)
+            self.toast.push("Task Manager opened", "ok", 1.5)
+        elif action == "vps_reconnect" or action == "vps_retry":
+            threading.Thread(target=self.vps.poll, daemon=True).start()
+            self.toast.push("VPS reconnecting...", "info", 2.0)
+        elif action == "dns_flush":
+            import subprocess
+            subprocess.run(["ipconfig", "/flushdns"], capture_output=True, creationflags=0x08000000)
+            self.toast.push("DNS flushed", "ok", 1.5)
+        elif action == "net_reset":
+            self.toast.push("Net reset not yet wired", "warn", 2.0)
+        elif action == "screensaver":
+            self._in_screensaver = True
+            self.screensaver.feed_input(time.time() - 200)  # Force screensaver on
 
     def stop(self):
         self.running = False
