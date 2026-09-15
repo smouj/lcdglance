@@ -111,7 +111,7 @@ class LCDGlance:
 
         # Rendering
         self.gfx = Gfx()
-        self.sprites = create_default_sprites()
+        self.sprites = None  # Disabled: procedural mascots look better on real LCD
         self.mascot = MascotRenderer(self.gfx, sprites=self.sprites)
 
         # Animation engine
