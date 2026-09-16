@@ -1,4 +1,9 @@
-"""DownloadPage — shows when a download is active (auto-focus)."""
+"""DownloadPage — shows when a download is active (auto-focus).
+
+Layout:
+  Progress bar + name + speed + ETA when downloading.
+  Shows detection state (candidate/confirming/stalled) when not yet active.
+"""
 import time
 
 from .base import Page
@@ -10,9 +15,39 @@ class DownloadPage(Page):
 
     def render(self, gfx, d, st, oc, dl, ctx):
         s = dl.snapshot()
-        gfx.frame(d, "DOWNLOADING", fmt_speed(s["speed"]))
-        gfx.stripes(d, 2, 15, 156, 12, time.time() * 26)
-        if int(time.time()) % 2 == 0:
-            gfx.text(d, (3, 30), f"{clip(s['name'] or 'download', 11)} {fmt_bytes(s['total_mb'])}", small=True)
+        state = s.get("state", "idle")
+
+        if s.get("active"):
+            elapsed = int(s.get("elapsed", 0))
+            speed = s.get("speed", 0)
+            total_mb = s.get("total_mb", 0)
+            file_mb = s.get("file_mb", 0)
+            name = s.get("name", "") or s.get("file", "")
+
+            # Progress bar
+            pct = (total_mb / file_mb) if file_mb > 0 else 0
+            gfx.frame(d, "DOWNLOAD", fmt_speed(speed))
+            gfx.stripes(d, 2, 13, 156, 10, time.time() * 26)
+            gfx.hbar(d, 2, 24, 156, 8, min(1.0, pct))
+
+            # Name or elapsed
+            if int(time.time()) % 2 == 0:
+                gfx.text(d, (3, 34), f"{clip(name, 12)} {fmt_bytes(total_mb)}", small=True)
+            else:
+                gfx.text(d, (3, 34), f"{elapsed}s  {fmt_bytes(total_mb)}/{fmt_bytes(file_mb)}", small=True)
+        elif state == "confirming":
+            gfx.frame(d, "DOWNLOAD", "confirming")
+            gfx.text(d, (3, 20), "detecting download...", small=True)
+            gfx.text(d, (3, 30), f"DN {fmt_speed(st.get('net_dn', 0))}", small=True)
+        elif state == "candidate":
+            gfx.frame(d, "DOWNLOAD", "detecting")
+            gfx.text(d, (3, 20), "network activity detected", small=True)
+            gfx.text(d, (3, 30), f"DN {fmt_speed(st.get('net_dn', 0))}", small=True)
+        elif state == "stalled":
+            gfx.frame(d, "DOWNLOAD", "stalled")
+            gfx.text(d, (3, 20), "download stalled", small=True)
+            gfx.text(d, (3, 30), "waiting for data...", small=True)
         else:
-            gfx.text(d, (3, 30), clip(s["file"] or f"{int(s['elapsed'])}s elapsed", 25), small=True)
+            # Idle — should not normally be shown
+            gfx.frame(d, "DOWNLOAD", "none")
+            gfx.text(d, (3, 20), "no active download", small=True)

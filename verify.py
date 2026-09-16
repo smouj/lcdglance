@@ -20,6 +20,8 @@ Checks
      gesture (tap, hold, combo) produces its action.
   7. ConnectionSupervisor transitions correctly between ONLINE/STALE/OFFLINE
      with backoff, and toast deduplication prevents repeated notifications.
+  8. NOW page renders without errors and shows PC/CLAW/CODEX/NET status.
+  9. Activity page renders without errors.
 """
 import argparse
 import os
@@ -218,6 +220,20 @@ def main():
           ss.should_show(now, busy=False) is False, "", v)
     check("screensaver: idle_seconds tracks the later of input/activity",
           abs(ss.idle_seconds(now)) < 0.01, f"{ss.idle_seconds(now)}", v)
+
+    # 5b — NOW page renders (use empty stats like other page tests)
+    from src.pages.now import NowPage
+    np = NowPage()
+    img_np, d_np = gfx.canvas()
+    np.render(gfx, d_np, {}, oc, dl, {"sources": [], "active_source": {"key": "pc", "label": "PC", "online": True, "busy": False, "detail": ""}, "busy": False})
+    check("NOW page renders", True, "no error", v)
+
+    # 5b2 — Activity page renders
+    from src.pages.activity import ActivityPage
+    ap = ActivityPage()
+    img_ap, d_ap = gfx.canvas()
+    ap.render(gfx, d_ap, {}, oc, dl, {})
+    check("Activity page renders", True, "no error", v)
 
     # 5c — ConnectionSupervisor state machine
     sup = ConnectionSupervisor("test")

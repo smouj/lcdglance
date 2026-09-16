@@ -87,6 +87,8 @@ from src.pages.status import StatusPage
 from src.pages.download import DownloadPage
 from src.pages.vps_page import VPSPage
 from src.pages.screensaver import ScreensaverPage
+from src.pages.now import NowPage
+from src.pages.activity import ActivityPage
 from src.pages.quickmenu import QuickMenuPage
 from src.anim.controller import AnimationController, AnimState
 from src.anim.scene import SceneDirector
@@ -134,8 +136,8 @@ class LCDGlance:
         self.rgb = None
 
         # Pages
-        self.pages = [MascotPage(), SourcesPage(), SystemPage(), NetworkPage(),
-                      ProcsPage(), OpenClawPage(), AlertsPage()]
+        self.pages = [NowPage(), MascotPage(), SourcesPage(), SystemPage(),
+                      NetworkPage(), OpenClawPage(), ActivityPage(), AlertsPage()]
         if self.vps.enabled:
             self.pages.append(VPSPage())
         self.mascot_page = self.pages[0]

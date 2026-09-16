@@ -71,7 +71,16 @@ class MascotPage(Page):
 
         # --- Right column body (starts below the 12 px header band) ---
         s = oc.snapshot()
-        state = "BUSY" if src["busy"] else ("OK" if src["online"] else "OFFLINE")
+        # Use supervisor state for connection accuracy
+        oc_state = s.get("state", "offline")
+        if src["busy"]:
+            state = "BUSY"
+        elif not src["online"]:
+            state = oc_state.upper() if oc_state != "online" else "OFFLINE"
+        elif oc_state == "stale":
+            state = "STALE"
+        else:
+            state = "OK"
         gfx.text(d, (63, 12), clip(f"{src['label']} {state}", 12))
 
         model = _short_model(s.get("model"))
