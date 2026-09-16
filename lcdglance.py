@@ -88,12 +88,14 @@ from src.pages.download import DownloadPage
 from src.pages.vps_page import VPSPage
 from src.pages.screensaver import ScreensaverPage
 from src.pages.now import NowPage
+from src.pages.codex import CodexPage
 from src.pages.activity import ActivityPage
 from src.pages.quickmenu import QuickMenuPage, DiagnosticsPage
 from src.anim.controller import AnimationController, AnimState
 from src.anim.scene import SceneDirector
 from src.anim.transition import TransitionEngine
 from src.anim.toast import ToastManager
+from src.anim.eventcard import EventCardManager
 from src.ui.buttons import ButtonHandler
 from src.ui.rgb import RGBEngine
 from src.ui.applets import kill_lcd_applets
@@ -128,18 +130,21 @@ class LCDGlance:
         self.scene = None  # initialised after pages
         self.transition = TransitionEngine()
         self.toast = ToastManager()
+        self.eventcard = EventCardManager()
         self.buttons = None  # initialised after LCD connect
         self.screensaver = ScreensaverPage()
         self.quickmenu = QuickMenuPage()
         self.diagnostics = DiagnosticsPage()
         self._in_diagnostics = False
+        self._dl_was_active = False
 
         # RGB
         self.rgb = None
 
         # Pages
         self.pages = [NowPage(), MascotPage(), SourcesPage(), SystemPage(),
-                      NetworkPage(), OpenClawPage(), ActivityPage(), AlertsPage()]
+                      NetworkPage(), OpenClawPage(), CodexPage(),
+                      ActivityPage(), AlertsPage()]
         if self.vps.enabled:
             self.pages.append(VPSPage())
         self.mascot_page = self.pages[0]
@@ -408,12 +413,21 @@ class LCDGlance:
                     self.rgb.busy = busy
                     self.rgb.update(st, self.scene.page_index)
 
-                # Push toasts for notable events
+                # Push event cards for notable events (full-panel, brief)
                 if ev and (now - ev["ts"]) < 2.0:
+                    label = ev.get("label", "")
                     if ev["kind"] == "ok":
-                        self.toast.push(f"OK: {clip(ev.get('label', ''), 20)}", "ok", 2.5)
+                        self.eventcard.push("ok", label or "TASK COMPLETE",
+                                            ["completed successfully"], 2.5)
                     else:
-                        self.toast.push(f"FAIL: {clip(ev.get('label', ''), 20)}", "error", 3.0)
+                        self.eventcard.push("fail", label or "TASK FAILED",
+                                            ["see Alerts page"], 3.0)
+
+                # Download completed → event card
+                if self._dl_was_active and not self.dl.active:
+                    self.eventcard.push("down", "DOWNLOAD COMPLETE",
+                                        [self.dl.name or self.dl.file or "finished"], 2.5)
+                self._dl_was_active = self.dl.active
 
                 # Render LCD frame
                 if self.lcd.connected:
@@ -470,8 +484,16 @@ class LCDGlance:
                         img, d = self.gfx.canvas()
                         page.render(self.gfx, d, st, self.oc, self.dl, ctx)
 
-                        # Toast overlay (not in screensaver/quickmenu)
-                        if not self._in_screensaver and not self._in_quickmenu:
+                        # Event card: highest priority overlay (never in
+                        # screensaver/quickmenu, which have their own screens)
+                        drawn_card = False
+                        if not self._in_screensaver and not self._in_quickmenu \
+                                and not self._in_diagnostics:
+                            drawn_card = self.eventcard.render(d, self.gfx, now)
+                        # Toast overlay (only when no event card is showing)
+                        if (not drawn_card and not self._in_screensaver
+                                and not self._in_quickmenu
+                                and not self._in_diagnostics):
                             self.toast.render(d, self.gfx, now)
 
                         # Flash overlay (B4)

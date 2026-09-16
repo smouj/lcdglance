@@ -21,7 +21,7 @@ Checks
   7. ConnectionSupervisor transitions correctly between ONLINE/STALE/OFFLINE
      with backoff, and toast deduplication prevents repeated notifications.
   8. NOW page renders without errors and shows PC/CLAW/CODEX/NET status.
-  9. Activity page renders without errors.
+  9. Activity, Codex and event-card overlays render without errors.
 """
 import argparse
 import os
@@ -234,6 +234,25 @@ def main():
     img_ap, d_ap = gfx.canvas()
     ap.render(gfx, d_ap, {}, oc, dl, {})
     check("Activity page renders", True, "no error", v)
+
+    # 5b3 — Codex page renders
+    from src.pages.codex import CodexPage
+    cp = CodexPage()
+    img_cp, d_cp = gfx.canvas()
+    cp.render(gfx, d_cp, {}, oc, dl, {})
+    check("Codex page renders", True, "no error", v)
+
+    # 5b4 — Event card renders and expires
+    from src.anim.eventcard import EventCardManager
+    ec = EventCardManager()
+    check("eventcard: inactive by default", not ec.active, "inactive", v)
+    ec.push("ok", "BUILD COMPLETE", ["138 TESTS PASSED"], 2.5)
+    check("eventcard: active after push", ec.active, "active", v)
+    img_ec, d_ec = gfx.canvas()
+    drawn = ec.render(d_ec, gfx, time.time())
+    check("eventcard: renders a card", drawn is True, str(drawn), v)
+    ec.clear()
+    check("eventcard: cleared", not ec.active, "cleared", v)
 
     # 5c — ConnectionSupervisor state machine
     sup = ConnectionSupervisor("test")

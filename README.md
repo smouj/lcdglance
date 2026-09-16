@@ -4,8 +4,10 @@
 160×43** y la **iluminación RGB** del teclado Logitech **G510**, sobre Logitech Gaming
 Software (LGS 8.57).
 
-> Una pantalla retro sci-fi con reloj en tiempo real, vista general (overview) y tres
-> mascotas pixel-art dibujadas a mano — una por cada fuente que vigila.
+> Una pantalla retro sci-fi con reloj en tiempo real, resumen instantáneo (**NOW**),
+> diagnóstico de conexiones y tres mascotas pixel-art dibujadas a mano — una por cada
+> fuente que vigila. **v10** añade un supervisor de conexiones, scheduler por deadlines
+> y tarjetas de evento.
 
 ![Mascotas: PC, CLAW, CODEX](docs/screens/hero-mascots.png)
 
@@ -56,17 +58,21 @@ color tiñe el teclado RGB.
 
 | # | Página | Contenido | Captura |
 |---|---|---|---|
-| 1 | **Mascot** | mascota + panel detallado por fuente (B3 cambia de mascota) | ![Mascot](docs/screens/mascot-claw.png) |
-| 2 | **Sources** | PC / CLAW / CODEX con métricas, mini-mascotas y barras de actividad | ![Sources](docs/screens/sources.png) |
-| 3 | **System** | CPU / RAM / disco + temperatura + frecuencia + memoria + top proceso | ![System](docs/screens/system.png) |
-| 4 | **Network** | subida/bajada + pico + sparkline con escala | ![Network](docs/screens/network.png) |
-| 5 | **Procs** | procesos top por CPU y memoria | ![Procs](docs/screens/procs.png) |
-| 6 | **OpenClaw** | tipos de agentes + gateway + ratio ok/fail + último trabajo | ![OpenClaw](docs/screens/openclaw.png) |
-| 7 | **Alerts** | alertas de sistema y agentes con iconos de severidad | ![Alerts](docs/screens/alerts-clear.png) |
-| 8 | **VPS** | servidor remoto SSH (si se configura `vps_config.json`) | ![VPS](docs/screens/vps.png) |
-| ★ | **Download** | aparece **solo** con una descarga real | ![Download](docs/screens/download.png) |
-| ◈ | **Scouter** | lectura completa bajo demanda (**B3 mantenido**): CPU/RAM/disco, temperatura, gateway, agentes, Codex | ![Overview](docs/screens/overview.png) |
-| ☾ | **Screensaver** | reloj + mascota dormida tras 90 s **sin input ni actividad** | ![Screensaver](docs/screens/screensaver.png) |
+| 1 | **NOW** | resumen instantáneo: PC, CLAW, CODEX y red en 4 líneas | ![Now](docs/screens/now.png) |
+| 2 | **Mascot** | mascota + estado/modelo/cuota por fuente (B3 cambia de mascota) | ![Mascot](docs/screens/mascot-claw.png) |
+| 3 | **Sources** | PC / CLAW / CODEX con estado supervisor (OK/BUSY/STALE/OFFLINE) | ![Sources](docs/screens/sources.png) |
+| 4 | **System** | CPU (temp) / RAM (usada/total) / disco (libre) + sparklines | ![System](docs/screens/system.png) |
+| 5 | **Network** | subida/bajada, pico, sparkline y estado de descarga | ![Network](docs/screens/network.png) |
+| 6 | **OpenClaw** | gateway con estado supervisor, agentes, latencia y backoff | ![OpenClaw](docs/screens/openclaw.png) |
+| 7 | **Codex** | terminal física del agente: WORKING / IDLE / OFFLINE | ![Codex](docs/screens/codex.png) |
+| 8 | **Activity** | timeline de eventos recientes (tareas, descargas, alertas) | ![Activity](docs/screens/activity.png) |
+| 9 | **Alerts** | alertas con modo **invertido** para críticas (CPU>95 %, temp>90°) | ![Alerts](docs/screens/alerts-clear.png) |
+| 10 | **VPS** | servidor remoto SSH (si se configura `vps_config.json`) | ![VPS](docs/screens/vps.png) |
+| ★ | **Download** | solo con descarga real: progreso, ETA y estado | ![Download](docs/screens/download.png) |
+| ◈ | **Scouter** | **B3 mantenido**: power level animado (0→PL en 300 ms) + análisis | ![Overview](docs/screens/overview.png) |
+| ☾ | **Screensaver** | reloj + mascota dormida + interlude "NOMINAL" cada 12 s | ![Screensaver](docs/screens/screensaver.png) |
+| ✉ | **Event card** | notificación a pantalla completa al terminar tarea/build/descarga | — |
+| ⚙ | **Quick menu** | **B3+B4**: acciones + **Diagnostics** (estado de cada conexión) | — |
 
 ### Alertas activas
 
@@ -99,6 +105,37 @@ Al despertar salta directamente a la **mascota reaccionando** durante 6 s, para 
 *qué* se está haciendo y no solo *que* pasa algo. Una pulsación de botón también lo
 cierra, y el menú rápido (`B3+B4`) permite activarlo o desactivarlo a mano.
 
+Cada **12 segundos** interrumpe brevemente la calma con un interludio **`NOMINAL`** de
+2,5 s: un tick grande y CPU / RAM / red, para saber de un vistazo que todo sigue bien.
+
+![Screensaver](docs/screens/screensaver.png)
+
+### Event cards — notificaciones de hardware
+
+Cuando algo termina de verdad (una tarea de agente, una build, una descarga), no salta
+un toast diminuto: la **tarjeta de evento** ocupa el panel entero durante ~2,5 s con
+icono, título y detalle. Es una notificación de hardware, no un cambio de página.
+
+![Event card](docs/screens/eventcard.png)
+
+Eventos que generan tarjeta:
+
+| Evento | Icono | Contenido |
+|---|---|---|
+| Tarea de agente OK | ✓ | `TASK COMPLETE` + nombre |
+| Tarea de agente fallida | ! | `TASK FAILED` + «see Alerts page» |
+| Descarga completada | ↓ | `DOWNLOAD COMPLETE` + fichero |
+
+### Diagnostics — estado de cada conexión
+
+En el menú rápido (`B3+B4` → **Diagnostics**) hay una página de diagnóstico que muestra
+el estado **real** de cada componente: `online`, `stale`, `connecting` u `offline`, con
+icono, edad del estado, latencia y contador de fallos.
+
+![Diagnostics](docs/screens/diagnostics.png)
+
+Es la vista que faltaba para saber *por qué* algo no responde, en vez de adivinar.
+
 ---
 
 ## Botones
@@ -116,6 +153,9 @@ Toque corto vs. **mantener pulsado** (~0,6 s) — cada botón tiene dos funcione
 
 **Atajos mantenidos (≥0,5 s).** Un hold nunca dispara si su compañero de combo también
 está pulsado, así `B1+B2` y `B3+B4` siguen siendo inequívocos.
+
+En el menú rápido, `B3` selecciona y `B4` cancela. La opción **Diagnostics** abre la
+página de estado de conexiones; cualquier botón la cierra.
 
 **B3 — cambiar de mascota.** Cada pulsación avanza a la siguiente mascota y muestra un
 aviso breve (`MASCOT PC`, `MASCOT CLAW`, `MASCOT CODEX`, `MASCOT AUTO`). En `AUTO` el panel
@@ -185,21 +225,47 @@ restart.bat          reinicia la aplicación
 restart_lgs.bat      reinicia LGS + la aplicación
 
 src/
+  supervisor/ core.py                  ONLINE → STALE → OFFLINE + backoff
   hardware/  lcd.py, led.py            controladores de las DLLs de Logitech
   sources/   system, openclaw,          recogida de datos (hilos aparte)
              download, vps
   render/    gfx.py, bitmap.py,        lienzo 1-bit, binarización LUT, fuente
              bitmap_font.py            bitmap nativa (disponible, no cableada)
   anim/      controller, scene,         máquina de estados, escenas,
-             transition, toast         transiciones, avisos
+             transition, toast,        transiciones, avisos,
+             eventcard                 tarjetas de evento a pantalla completa
   mascots/   mascot.py, sprites.py      mascotas procedurales (+ sprites opt-in),
              interactions, sources     escenas compartidas, lógica de fuentes
-  pages/     una por pantalla           Mascot, Sources, System, Network,
-                                        Procs, OpenClaw, Alerts, VPS,
-                                        Download, Status, Screensaver, QuickMenu
+  pages/     una por pantalla           Now, Mascot, Sources, System, Network,
+                                        OpenClaw, Codex, Activity, Alerts, VPS,
+                                        Download, Status, Screensaver, QuickMenu,
+                                        Diagnostics
   ui/        buttons, rgb, applets      botones, motor RGB, limpieza de applets
   util/      constants, text, ringbuf   ajustes, helpers de texto, historial
 ```
+
+### Fiabilidad — supervisor de conexiones
+
+Cada componente vigilado (LCD, RGB, OpenClaw, VPS) tiene un `ConnectionSupervisor` con
+una máquina de estados real:
+
+```
+CONNECTING → ONLINE → STALE → OFFLINE → (backoff 1,2,4,8,15,30 s) → CONNECTING
+```
+
+- Un fallo transitorio baja a **STALE** (sigue usable, pero se avisa).
+- Dos fallos consecutivos bajan a **OFFLINE** y arranca el backoff.
+- Un solo éxito desde cualquier estado vuelve a **ONLINE**.
+
+Esto elimina dos bugs clásicos: morir en silencio (el componente dejaba de responder sin
+que nadie lo supiera) y marcar `offline` por un único timeout puntual.
+
+### Rendimiento — scheduler por deadlines
+
+El bucle principal ya no duerme un intervalo fijo: calcula el **próximo deadline**
+(input a 50 Hz, render al FPS del estado actual) y duerme justo hasta el más cercano,
+con un mínimo de 5 ms. Así los 12/24 FPS se alcanzan de verdad cuando hay animación, y
+en reposo no se quema CPU.
 
 > Las mascotas se dibujan **proceduralmente** (primitivas de Pillow). Existe un
 > renderizador de sprites pixel-art (`src/mascots/sprites.py`) desactivado por defecto
@@ -271,6 +337,8 @@ asíncrono y **no bloquea** el bucle principal.
 | Conversión a bitmap | 1,98 ms | 0,11 ms (LUT) |
 | Escaneo de descargas | siempre, 1 Hz | se salta sin red |
 | Envío al LCD | 4 Hz fijo | adaptativo + deduplicado |
+| Bucle principal | `sleep(0,1)` fijo | deadline (input 50 Hz, render por FPS) |
+| Sonda OpenClaw | timeout 180 s | timeout 30 s + `_poll_lock` |
 | Render de página | — | **~3 ms/frame** (presupuesto 250 ms) |
 | **CPU en reposo** | 10,8 % de un núcleo | **7,6 %** |
 
