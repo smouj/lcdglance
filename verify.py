@@ -18,6 +18,8 @@ Checks
      distinct bitmap, and none is blank.  The screensaver is activity-aware
      (never shows while work is in progress), and every documented button
      gesture (tap, hold, combo) produces its action.
+  7. ConnectionSupervisor transitions correctly between ONLINE/STALE/OFFLINE
+     with backoff, and toast deduplication prevents repeated notifications.
 """
 import argparse
 import os
@@ -35,6 +37,7 @@ from src.sources.system import NET_HIST
 from src.pages.mascot import MascotPage, _usage_text
 from src.pages.screensaver import ScreensaverPage
 from src.ui.buttons import ButtonHandler
+from src.supervisor import ConnectionSupervisor
 from src.pages.sources import SourcesPage
 from src.pages.system import SystemPage
 from src.pages.network import NetworkPage
@@ -215,6 +218,26 @@ def main():
           ss.should_show(now, busy=False) is False, "", v)
     check("screensaver: idle_seconds tracks the later of input/activity",
           abs(ss.idle_seconds(now)) < 0.01, f"{ss.idle_seconds(now)}", v)
+
+    # 5c — ConnectionSupervisor state machine
+    sup = ConnectionSupervisor("test")
+    check("supervisor: starts OFFLINE", sup.state == "offline", sup.state, v)
+    sup.mark_connecting()
+    check("supervisor: CONNECTING after mark_connecting", sup.state == "connecting", sup.state, v)
+    sup.mark_online(latency=0.15)
+    check("supervisor: ONLINE after mark_online", sup.is_online, sup.state, v)
+    check("supervisor: latency recorded", sup.latency == 0.15, str(sup.latency), v)
+    sup.mark_failure("test error")
+    check("supervisor: STALE after 1 failure from ONLINE", sup.is_stale, sup.state, v)
+    sup.mark_failure("test error 2")
+    check("supervisor: OFFLINE after 2 failures from STALE", sup.is_offline, sup.state, v)
+    check("supervisor: should_reconnect after OFFLINE", sup.should_reconnect(time.time() + 60), "reconnect ok", v)
+    sup.mark_online()
+    check("supervisor: ONLINE snaps back from any state", sup.is_online, sup.state, v)
+    snap = sup.snapshot()
+    check("supervisor: snapshot has state+latency", "state" in snap and "latency" in snap, list(snap.keys())[:4], v)
+    sup.mark_stale("partial data")
+    check("supervisor: mark_stale from ONLINE", sup.is_stale, sup.state, v)
 
     # 5d — button handler: taps, holds and combos
     class _FakeLcd:

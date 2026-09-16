@@ -30,6 +30,7 @@ class DownloadDetector:
         self.file_mb = 0.0
         self.started = 0.0
         self._last_rx = 0.0
+        self._last_rx_time = 0.0
         self._last_bytes = {}
         self._files = {}
         self._streak = 0
@@ -92,8 +93,11 @@ class DownloadDetector:
             return
         now = time.time()
         rx = st.get("net_recv", 0.0)
-        rx_rate = (rx - self._last_rx) if self._last_rx else 0.0
+        now_mono = time.monotonic()
+        dt = now_mono - self._last_rx_time if self._last_rx_time > 0 else 1.0
+        rx_rate = (rx - self._last_rx) / dt if (dt > 0 and self._last_rx > 0) else 0.0
         self._last_rx = rx
+        self._last_rx_time = now_mono
 
         if rx_rate < DL_MIN_NET_MB and not self.active:
             self._streak = 0

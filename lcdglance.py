@@ -173,11 +173,8 @@ class LCDGlance:
 
         if not self.lcd.connected and not self.led.connected:
             print("[!] No Logitech devices. Is LGS running?", flush=True)
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                return
+            print("[*] Will keep trying to reconnect...", flush=True)
+            # Don't trap — let the main loop run and the supervisor reconnect
 
         self.running = True
         print(f"Pages: {[p.name for p in self.pages]}", flush=True)
@@ -231,6 +228,7 @@ class LCDGlance:
                     pass
             except Exception:
                 traceback.print_exc()
+                self.oc.sup.mark_failure("poll loop exception")
                 time.sleep(1.0)
 
     def _dl_loop(self):
@@ -257,6 +255,7 @@ class LCDGlance:
                     pass
             except Exception:
                 traceback.print_exc()
+                self.vps.sup.mark_failure("poll loop exception")
                 time.sleep(1.0)
 
     def _safe_poll(self):
@@ -273,9 +272,10 @@ class LCDGlance:
             try:
                 now = time.time()
 
-                # Periodic LCD reconnection check
+                # Periodic hardware reconnection (supervisor backoff)
                 if now - reconnect_at > LCD_RECONNECT:
-                    self.lcd.ensure_connected()
+                    self.lcd.ensure_connected(now)
+                    self.led.ensure_connected()
                     reconnect_at = now
 
                 # Periodic LGS applet sweep

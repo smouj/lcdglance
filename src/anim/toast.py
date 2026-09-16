@@ -17,14 +17,22 @@ class ToastManager:
         self.queue = []          # [(text, severity, until)]
         self._current = None    # (text, severity, appear_time)
         self._fade_until = 0.0
+        self._dedup = {}         # (text, severity) -> timestamp of last push
 
     def push(self, text, severity="info", duration=2.0):
         """Add a toast notification.
 
         severity: "info", "ok", "warn", "error"
         duration: seconds to display before fading
+
+        Duplicate pushes (same text+severity within 3s) are silently dropped
+        to prevent the same event from queuing dozens of identical toasts.
         """
         now = time.time()
+        key = (text, severity)
+        if key in self._dedup and now - self._dedup[key] < 3.0:
+            return  # dedup: same toast within 3 seconds
+        self._dedup[key] = now
         self.queue.append((text, severity, now + duration))
         # If nothing is showing, start immediately
         if self._current is None:
@@ -34,6 +42,8 @@ class ToastManager:
         """Pop the next toast from the queue."""
         # Expire old entries
         self.queue = [(t, s, u) for t, s, u in self.queue if u > now]
+        # Prune dedup entries older than 10 seconds
+        self._dedup = {k: v for k, v in self._dedup.items() if now - v < 10.0}
         if self.queue:
             text, severity, until = self.queue.pop(0)
             self._current = (text, severity, now)

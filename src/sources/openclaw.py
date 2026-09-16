@@ -7,11 +7,14 @@ import time
 from ..util.constants import (
     WSL_CMD, CREATE_NO_WINDOW, TERMINAL_OK, TERMINAL_BAD, RUNTIME_TAG, SEEN_FILE,
 )
+from ..supervisor import ConnectionSupervisor
 
 
 class OpenClawMonitor:
     def __init__(self):
         self._lock = threading.Lock()
+        self._poll_lock = threading.Lock()   # prevents concurrent polls
+        self.sup = ConnectionSupervisor("oc", stale_threshold=1, offline_threshold=2)
         self.online = False
         self.running = self.ok = self.fail = self.total = 0
         self.last_task = ""
@@ -49,11 +52,33 @@ class OpenClawMonitor:
             pass
 
     def poll(self):
-        """Read the compact lcd-probe lines and raise alerts for finished work."""
+        """Read the compact lcd-probe lines and raise alerts for finished work.
+
+        Protected by _poll_lock to prevent concurrent runs. Validates returncode
+        before marking online. Uses a 30-second timeout (down from 180).
+        """
+        if not self._poll_lock.acquire(blocking=False):
+            return   # another poll is already running
         try:
-            r = subprocess.run(WSL_CMD, capture_output=True, timeout=180,
+            self._poll_inner()
+        finally:
+            self._poll_lock.release()
+
+    def _poll_inner(self):
+        start = time.monotonic()
+        try:
+            r = subprocess.run(WSL_CMD, capture_output=True, timeout=30,
                                creationflags=CREATE_NO_WINDOW)
+            elapsed = time.monotonic() - start
+            if r.returncode != 0:
+                err = r.stderr.decode("utf-8", errors="replace")[:120] if r.stderr else f"exit {r.returncode}"
+                self.sup.mark_failure(err)
+                with self._lock:
+                    self.online = False
+                return
             out = r.stdout.decode("utf-8", errors="replace")
+            if not out.strip():
+                self.sup.mark_stale("empty output")
             now = time.time()
             new_alerts, new_events = [], []
             ok = fail = total = 0
@@ -128,7 +153,8 @@ class OpenClawMonitor:
             self._save_seen()
 
             with self._lock:
-                self.online = True
+                self.sup.mark_online(latency=elapsed)
+                self.online = self.sup.is_online
                 self.running = sum(active_agents.values())
                 self.ok, self.fail, self.total = ok, fail, total
                 self.last_task, self.last_task_status = last_task, last_status
@@ -152,13 +178,22 @@ class OpenClawMonitor:
                     self.last_event = {"ts": ts, "kind": kind, "label": text}
                 if len(self.alerts) > 40:
                     self.alerts = self.alerts[-40:]
-        except Exception:
+        except Exception as exc:
             with self._lock:
-                self.online = False
+                self.sup.mark_failure(str(exc)[:120])
+                self.online = self.sup.is_online
+
+    def health(self):
+        """Return supervisor snapshot for diagnostics."""
+        return self.sup.snapshot()
+
+    def health(self):
+        """Return supervisor snapshot for diagnostics."""
+        return self.sup.snapshot()
 
     def snapshot(self):
         with self._lock:
-            return {
+            base = {
                 "online": self.online, "running": self.running,
                 "ok": self.ok, "fail": self.fail, "total": self.total,
                 "last_task": self.last_task,
@@ -177,3 +212,5 @@ class OpenClawMonitor:
                 "usage_window_label": self.usage_window_label,
                 "usage_window_pct": self.usage_window_pct,
             }
+            base.update(self.sup.snapshot())
+            return base

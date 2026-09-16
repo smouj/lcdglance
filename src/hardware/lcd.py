@@ -9,6 +9,8 @@ import ctypes
 import os
 import time
 
+from ..supervisor import ConnectionSupervisor
+
 from ..util.constants import (
     W, H, BITMAP_SIZE, LOGI_LCD_TYPE_MONO,
     BTN_1, BTN_2, BTN_3, BTN_4, LCD_DLL_PATH,
@@ -24,6 +26,7 @@ class LCDController:
         self.connected = False
         self._last_connect = 0.0
         self._buf = None
+        self.sup = ConnectionSupervisor("lcd")
 
     def connect(self):
         if not os.path.exists(self.dll_path):
@@ -46,17 +49,25 @@ class LCDController:
             self.lcd = None
             return False
 
-    def ensure_connected(self):
+    def ensure_connected(self, now=None):
+        import time as _t
+        now = now or _t.time()
         if self.connected and self.lcd:
             try:
                 if self.lcd.LogiLcdIsConnected(LOGI_LCD_TYPE_MONO):
+                    self.sup.mark_online()
                     return True
             except Exception:
                 pass
-        if time.time() - self._last_connect < 2:
-            return self.connected
-        self.shutdown()
-        return self.connect()
+        # Health check failed or never connected — try reconnect if backoff allows
+        if self.sup.should_reconnect(now):
+            self.sup.mark_connecting()
+            self.shutdown()
+            result = self.connect()
+            if not result:
+                self.sup.next_backoff()
+            return result
+        return self.connected
 
     def button(self, bit):
         """Poll one button (BTN_1..BTN_4)."""
@@ -93,6 +104,10 @@ class LCDController:
                 self.lcd.LogiLcdUpdate()
             except Exception:
                 pass
+
+    def health(self):
+        """Return supervisor snapshot for diagnostics."""
+        return self.sup.snapshot()
 
     def shutdown(self):
         if self.connected and self.lcd:
