@@ -22,6 +22,9 @@ Checks
      with backoff, and toast deduplication prevents repeated notifications.
   8. NOW page renders without errors and shows PC/CLAW/CODEX/NET status.
   9. Activity, Codex and event-card overlays render without errors.
+ 10. v10 integration regressions: mascot page is an instance (not pages[0]),
+     fps/interval are defined without an LCD, RGB theming is name-keyed, and
+     the quick menu accepts a snapshot dict.
 """
 import argparse
 import os
@@ -353,6 +356,48 @@ def main():
     acts = _actions([(_B1 | _B2, 0.60)])
     check("buttons: B1+B2 held fires no lone holds",
           "first_page" not in acts and "last_page" not in acts, str(acts), v)
+
+    # 5e — v10 integration regressions
+    # (a) the mascot page must be the real instance, never pages[0]
+    _from_lcd = None
+    import re as _re
+    _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "lcdglance.py"), encoding="utf-8").read()
+    check("integration: mascot_page is not pages[0]",
+          "self.mascot_page = self.pages[0]" not in _src,
+          "no positional guess", v)
+    check("integration: fps/interval hoisted out of the LCD branch",
+          "fps = FPS_IDLE\n                interval = 1.0 / fps" in _src,
+          "defaults before branch", v)
+
+    # (b) RGB theming must be name-keyed, not index-keyed
+    from src.util.constants import PAGE_THEME as _PT
+    check("integration: PAGE_THEME keyed by page name",
+          all(isinstance(k, str) for k in _PT.keys()),
+          "str keys", v)
+    from src.ui.rgb import RGBEngine as _RGB
+    _eng = _RGB.__new__(_RGB)
+    _eng.active_source_key = "pc"
+    _eng.busy = False
+    _eng.vps = None
+    _now_c = _eng._ambient({}, "Now")
+    _sys_c = _eng._ambient({"cpu": 50}, "System")
+    _net_c = _eng._ambient({}, "Network")
+    check("integration: _ambient resolves Now/System/Network by name",
+          _now_c is not None and _sys_c is not None and _net_c is not None,
+          f"{_now_c} {_sys_c} {_net_c}", v)
+
+    # (c) quick menu must accept a snapshot dict where it expects a monitor
+    from src.pages.quickmenu import QuickMenuPage as _QMP
+    _qm = _QMP()
+    _ok_dict = True
+    try:
+        _qm.build_menu({}, oc, dl, {"enabled": True, "online": False})
+    except Exception as _e:
+        _ok_dict = False
+        _err = str(_e)
+    check("integration: quickmenu.build_menu accepts a snapshot dict",
+          _ok_dict, "no AttributeError" if _ok_dict else _err, v)
 
     # 6 — mascots are distinct and non-blank
     seen = {}

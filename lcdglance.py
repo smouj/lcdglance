@@ -141,13 +141,15 @@ class LCDGlance:
         # RGB
         self.rgb = None
 
-        # Pages
-        self.pages = [NowPage(), MascotPage(), SourcesPage(), SystemPage(),
-                      NetworkPage(), OpenClawPage(), CodexPage(),
-                      ActivityPage(), AlertsPage()]
+        # Pages — keep the real instances, never a positional guess: the
+        # order changes between versions and pages[0] is not the mascot.
+        self.now_page = NowPage()
+        self.mascot_page = MascotPage()
+        self.pages = [self.now_page, self.mascot_page, SourcesPage(),
+                      SystemPage(), NetworkPage(), OpenClawPage(),
+                      CodexPage(), ActivityPage(), AlertsPage()]
         if self.vps.enabled:
             self.pages.append(VPSPage())
-        self.mascot_page = self.pages[0]
         self.status_page = StatusPage()
         self.dl_page = DownloadPage()
 
@@ -411,7 +413,7 @@ class LCDGlance:
                 if self.rgb:
                     self.rgb.active_source_key = active["key"]
                     self.rgb.busy = busy
-                    self.rgb.update(st, self.scene.page_index)
+                    self.rgb.update(st, self.scene.current_page.name)
 
                 # Push event cards for notable events (full-panel, brief)
                 if ev and (now - ev["ts"]) < 2.0:
@@ -429,7 +431,10 @@ class LCDGlance:
                                         [self.dl.name or self.dl.file or "finished"], 2.5)
                 self._dl_was_active = self.dl.active
 
-                # Render LCD frame
+                # Render LCD frame. Defaults live OUTSIDE the branch so the
+                # deadline sleep below can always read them (no LCD → no crash).
+                fps = FPS_IDLE
+                interval = 1.0 / fps
                 if self.lcd.connected:
                     # Determine which page to render
                     if self._in_diagnostics:

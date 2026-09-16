@@ -27,17 +27,27 @@ class QuickMenuPage(Page):
         self._built = False
 
     def build_menu(self, st, oc, dl, vps):
-        """Build the menu items based on current context."""
+        """Build the menu items from the current context.
+
+        *vps* may be the VPSMonitor itself or its snapshot dict — callers
+        pass either, and a dict has no .enabled/.snapshot().
+        """
         self.items = []
         s = oc.snapshot()
+
+        # Normalise the VPS argument to a plain snapshot dict.
+        if vps is None or isinstance(vps, dict):
+            vps_snap = vps or {}
+        else:
+            vps_snap = vps.snapshot() if getattr(vps, "enabled", False) else {}
 
         # Always-available items
         self.items.append(("Poll Now", "poll", "Force an OpenClaw poll"))
         if s.get("online"):
             self.items.append(("Restart GW", "restart_gw", "Restart OpenClaw gateway"))
         self.items.append(("Task Mgr", "taskmgr", "Open Task Manager"))
-        if vps and vps.enabled:
-            if vps.snapshot().get("online"):
+        if vps_snap.get("enabled"):
+            if vps_snap.get("online"):
                 self.items.append(("VPS Reconn", "vps_reconnect", "Force VPS re-poll"))
             else:
                 self.items.append(("VPS Retry", "vps_retry", "Retry VPS connection"))

@@ -10,4 +10,7 @@ from .status import StatusPage           # noqa: F401
 from .download import DownloadPage      # noqa: F401
 from .vps_page import VPSPage           # noqa: F401
 from .screensaver import ScreensaverPage  # noqa: F401
-from .quickmenu import QuickMenuPage     # noqa: F401
+from .quickmenu import QuickMenuPage, DiagnosticsPage  # noqa: F401
+from .now import NowPage                 # noqa: F401
+from .codex import CodexPage             # noqa: F401
+from .activity import ActivityPage       # noqa: F401

@@ -47,21 +47,23 @@ class RGBEngine:
     def _scale(c, f):
         return tuple(max(0, min(100, int(v * f))) for v in c)
 
-    def _ambient(self, st, page):
-        if page == 0:
+    def _ambient(self, st, page_name):
+        """Base colour for a page, keyed by page NAME (not index)."""
+        if page_name in ("Now", "Mascot"):
             if getattr(self, "busy", False):
                 return ACTIVE_COLOR
             return MASCOT_COLOR.get(self.active_source_key, (0, 80, 95))
-        if page == 2:
+        if page_name == "System":
             return lerp_palette(LOAD_PALETTE, st.get("cpu", 0) / 100.0)
-        if page == 7:
+        if page_name == "VPS":
             vps = self.vps.snapshot() if hasattr(self, 'vps') and self.vps else {}
             if vps.get("online"):
                 return (0, 70, 80)
             return (80, 20, 20)
-        return PAGE_THEME.get(page) or (0, 60, 90)
+        return PAGE_THEME.get(page_name) or (0, 60, 90)
 
-    def update(self, st, page):
+    def update(self, st, page_name):
+        """Update the backlight for the page with the given NAME."""
         if not self.led.connected:
             RGB_STATE["effect"] = "off"
             return
@@ -112,11 +114,9 @@ class RGBEngine:
             RGB_STATE["effect"] = "DISK FULL"
             return
 
-        base = self._ambient(st, page)
+        base = self._ambient(st, page_name)
         self.led.set_color(self._scale(base, self._breath(3.2) * self._night()))
-        names = {0: "mascot", 1: "sources", 2: "cpu-load", 3: "network",
-                 4: "procs", 5: "openclaw", 6: "alerts", 7: "vps"}
-        RGB_STATE["effect"] = names.get(page, "ambient")
+        RGB_STATE["effect"] = (page_name or "ambient").lower()
 
     def sweep(self):
         if not self.led.connected:

@@ -49,15 +49,20 @@ LOAD_PALETTE = [
     (0.55, (10, 90, 45)),  (0.75, (95, 70, 0)),
     (1.00, (100, 12, 12)),
 ]
+# Keyed by page NAME, not index: the page order changes between versions
+# and an index-keyed table silently gives every page the wrong colour.
+# None means "handled specially" (Mascot → source colour, System → CPU ramp).
 PAGE_THEME = {
-    0: None,             # Mascot  → active source colour
-    1: (70, 60, 90),     # Sources → slate
-    2: None,             # System  → CPU gradient
-    3: (0, 65, 90),      # Network → teal
-    4: (60, 25, 95),     # Procs   → violet
-    5: (0, 80, 95),      # OpenClaw → cyan
-    6: (95, 60, 0),      # Alerts  → amber
-    7: (0, 60, 80),      # VPS     → dark teal
+    "Now":      None,             # follows the active source
+    "Mascot":   None,             # active source colour
+    "Sources":  (70, 60, 90),     # slate
+    "System":   None,             # CPU gradient
+    "Network":  (0, 65, 90),      # teal
+    "OpenClaw": (0, 80, 95),      # cyan
+    "Codex":    (15, 80, 45),     # green
+    "Activity": (60, 25, 95),     # violet
+    "Alerts":   (95, 60, 0),      # amber
+    "VPS":      (0, 60, 80),      # dark teal
 }
 MASCOT_COLOR = {
     "pc":       (0, 70, 95),    # blue
