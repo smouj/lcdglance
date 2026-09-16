@@ -39,8 +39,9 @@ class SourcesPage(Page):
         mascot = ctx["mascot"]
         for i, s in enumerate(srcs):
             cx = 27 + i * 53
-            # Mini mascot
-            mascot.draw_mini(d, s["key"], cx, 21, s["busy"])
+            # Mini mascot (ctx may omit the renderer in tests/headless use)
+            if mascot is not None:
+                mascot.draw_mini(d, s["key"], cx, 21, s["busy"])
             # Label centered below
             label = s["label"]
             w = int(d.textlength(label, font=gfx.font_small))

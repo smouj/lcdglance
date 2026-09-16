@@ -48,7 +48,8 @@ class MascotPage(Page):
         mood = ctx["mood"]
 
         # --- Left column: mascot art ---
-        mascot.draw(d, src["key"], 29, 18, mood, busy=ctx.get("busy", False))
+        if mascot is not None:
+            mascot.draw(d, src["key"], 29, 18, mood, busy=ctx.get("busy", False))
         d.line([(6, 38), (52, 38)], fill=255)     # ground line
         d.line([(58, 1), (58, 41)], fill=255)     # column separator
 

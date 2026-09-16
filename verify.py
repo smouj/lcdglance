@@ -411,6 +411,23 @@ def main():
           _armed_after_render and _sp._opened_at == 0.0,
           f"opened_at={_sp._opened_at}", v)
 
+    # 5g — pages survive a missing mascot renderer (no ctx['mascot'])
+    _no_masc_ok = True
+    for _P in (MascotPage, SourcesPage):
+        try:
+            _pg = _P()
+            _i, _dd = Gfx.canvas()
+            _pg.render(gfx, _dd, {}, oc, dl,
+                       {"mascot": None, "sources": [], "active_source":
+                        {"key": "pc", "label": "PC", "online": True,
+                         "busy": False, "detail": ""}, "busy": False,
+                        "mood": "idle", "load": 0, "hist_bufs": {}})
+        except Exception as _e:
+            _no_masc_ok = False
+            _err = f"{_P.__name__}: {_e}"
+    check("pages: render without a mascot renderer",
+          _no_masc_ok, "no crash" if _no_masc_ok else _err, v)
+
     # 6 — mascots are distinct and non-blank
     seen = {}
     for key in ("openclaw", "codex", "pc"):
