@@ -343,15 +343,6 @@ class LCDGlance:
                             self._in_quickmenu = True
                             self.quickmenu.build_menu(st, self.oc, self.dl, self.vps)
 
-                # Check screensaver timeout
-                if not self._in_quickmenu:
-                    if self._in_screensaver:
-                        # Any recent input exits screensaver
-                        if now - self.screensaver.last_input < 2.0:
-                            self._in_screensaver = False
-                    elif self.screensaver.should_show:
-                        self._in_screensaver = True
-
                 # Update scene (auto-focus for downloads, agent events)
                 self.scene.update(now, self.oc, self.dl)
 
@@ -369,6 +360,27 @@ class LCDGlance:
                 interaction_trigger = None
                 if ev and (now - ev["ts"]) < 3.0:
                     interaction_trigger = "success" if ev["kind"] == "ok" else "failure"
+
+                # Screensaver: only while genuinely idle. It is a rest screen,
+                # so any real work (agents running, a download, heavy CPU, a
+                # fresh event) must wake it and keep it on the working view.
+                working = bool(
+                    busy
+                    or interaction_trigger
+                    or self.dl.active
+                    or (ev and (now - ev["ts"]) < 8.0)
+                )
+                if working:
+                    self.screensaver.feed_activity(now)
+                if not self._in_quickmenu:
+                    if self._in_screensaver:
+                        if working or (now - self.screensaver.last_input) < 2.0:
+                            self._in_screensaver = False
+                            if busy or self.dl.active:
+                                # Surface the reacting mascot, not the old page
+                                self.scene.focus(self.scene.mascot_page, 6.0, "wake")
+                    elif self.screensaver.should_show(now, busy=working):
+                        self._in_screensaver = True
 
                 # Advance animation controller
                 anim_state = self.anim.tick(now)
@@ -536,7 +548,10 @@ class LCDGlance:
             self.toast.push("Net reset not yet wired", "warn", 2.0)
         elif action == "screensaver":
             self._in_screensaver = True
-            self.screensaver.feed_input(time.time() - 200)  # Force screensaver on
+            # Push both timers far in the past so it stays on until real
+            # input or activity wakes it.
+            self.screensaver.feed_input(time.time() - 400)
+            self.screensaver.last_activity = 0.0
 
     def stop(self):
         self.running = False

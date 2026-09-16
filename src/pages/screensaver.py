@@ -1,11 +1,11 @@
 """ScreensaverPage — idle animation with clock and sleeping mascots.
 
-Activates after 90-120 seconds of no button input. Shows a slowly
-breathing mascot (at 2 FPS) with the current time, cycling through
-a subtle animation. Any button press returns to the previous page.
+Activates only after 90 s of no button input AND no system activity. It is
+a rest screen: it must never hide work in progress. Any button press, or any
+real activity (agents running, a download, heavy CPU, a fresh event) wakes
+the panel and returns it to the working view.
 
-The screensaver reduces CPU usage by rendering at only 2 FPS and
-skipping all data collection when idle.
+The screensaver renders at only 2 FPS to keep CPU usage low while idle.
 """
 import time
 
@@ -16,7 +16,7 @@ from ..util.constants import W
 class ScreensaverPage(Page):
     """Idle screensaver with clock and sleeping mascot."""
 
-    IDLE_TIMEOUT = 90.0     # seconds without input before screensaver
+    IDLE_TIMEOUT = 90.0      # seconds of no input AND no activity
     DIM_TIMEOUT = 60.0       # seconds before partial dim
     CLOCK_FORMAT_12 = True   # 12h vs 24h clock
 
@@ -24,21 +24,38 @@ class ScreensaverPage(Page):
 
     def __init__(self):
         self.last_input = time.time()
+        self.last_activity = 0.0
         self._phase = 0.0
 
     def feed_input(self, now):
         """Call when any button is pressed to reset the idle timer."""
         self.last_input = now
 
-    @property
-    def should_show(self):
-        """Whether the screensaver should be active."""
-        return time.time() - self.last_input > self.IDLE_TIMEOUT
+    def feed_activity(self, now):
+        """Call while the machine or the agents are working.
 
-    @property
+        Activity keeps the screensaver away so the panel shows the work in
+        progress instead of the clock.
+        """
+        self.last_activity = now
+
+    def idle_seconds(self, now=None):
+        """Seconds since the last button press or activity, whichever is later."""
+        now = now if now is not None else time.time()
+        return now - max(self.last_input, self.last_activity)
+
+    def should_show(self, now=None, busy=False):
+        """Whether the screensaver should be active.
+
+        Never while *busy*: if something is being done the panel must show it.
+        """
+        if busy:
+            return False
+        return self.idle_seconds(now) > self.IDLE_TIMEOUT
+
     def is_dimming(self):
         """Whether we should start dimming (partial idle)."""
-        return time.time() - self.last_input > self.DIM_TIMEOUT
+        return self.idle_seconds() > self.DIM_TIMEOUT
 
     def render(self, gfx, d, st, oc, dl, ctx):
         now = time.time()

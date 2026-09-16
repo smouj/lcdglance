@@ -71,6 +71,15 @@ class SceneDirector:
         """B4: flash the screen white for *duration* seconds."""
         self.flash_until = time.time() + duration
 
+    def focus(self, page, duration=5.0, kind="focus"):
+        """Show *page* for *duration* seconds, then fall back to the current page.
+
+        Used by auto-focus (downloads, agent events) and when the panel wakes
+        from the screensaver with work in progress.
+        """
+        self._override = {"page": page, "until": time.time() + duration,
+                          "kind": kind}
+
     def update(self, now, oc, dl):
         """Process auto-focus events: downloads and agent completions."""
         s = oc.snapshot()

@@ -15,7 +15,8 @@ Checks
      consecutive ink runs keep a >= 2 px gap.
   5. The Mascot page clock never touches the source label or the separator.
   6. Mascot art is identical across builds: each mascot key produces a
-     distinct bitmap, and none is blank.
+     distinct bitmap, and none is blank.  The screensaver is activity-aware:
+     it never shows while work is in progress.
 """
 import argparse
 import os
@@ -31,6 +32,7 @@ from src.mascots.mascot import MascotRenderer
 from src.mascots.sources import build_sources, pick_active, mood_for
 from src.sources.system import NET_HIST
 from src.pages.mascot import MascotPage, _usage_text
+from src.pages.screensaver import ScreensaverPage
 from src.pages.sources import SourcesPage
 from src.pages.system import SystemPage
 from src.pages.network import NetworkPage
@@ -194,6 +196,23 @@ def main():
     check("Mascot: quota text mentions left/balance",
           "left" in _usage_text(oc.snapshot()) or oc.snapshot().get("usage_balance"),
           _usage_text(oc.snapshot()), v)
+
+    # 5c — screensaver is activity-aware (must never hide work in progress)
+    ss = ScreensaverPage()
+    now = time.time()
+    ss.feed_input(now - 999)                 # long ago
+    check("screensaver: shows when idle and nothing is running",
+          ss.should_show(now, busy=False) is True, "", v)
+    check("screensaver: never shows while busy",
+          ss.should_show(now, busy=True) is False, "", v)
+    ss.feed_activity(now)
+    check("screensaver: recent activity suppresses it",
+          ss.should_show(now, busy=False) is False, "", v)
+    ss.feed_input(now)
+    check("screensaver: a button press suppresses it",
+          ss.should_show(now, busy=False) is False, "", v)
+    check("screensaver: idle_seconds tracks the later of input/activity",
+          abs(ss.idle_seconds(now)) < 0.01, f"{ss.idle_seconds(now)}", v)
 
     # 6 — mascots are distinct and non-blank
     seen = {}
