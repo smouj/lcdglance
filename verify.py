@@ -399,6 +399,18 @@ def main():
     check("integration: quickmenu.build_menu accepts a snapshot dict",
           _ok_dict, "no AttributeError" if _ok_dict else _err, v)
 
+    # 5f — scouter power-level ramp actually re-arms on reset
+    from src.pages.status import StatusPage as _SP
+    _sp = _SP()
+    _img, _d = Gfx.canvas()
+    _sp.render(gfx, _d, {}, oc, dl, {"load": 6824, "hist_bufs": {},
+                                     "temps": [], "mascot": None})
+    _armed_after_render = (_sp._opened_at != 0.0)
+    _sp.reset_animation()
+    check("scouter: ramp re-arms after reset_animation",
+          _armed_after_render and _sp._opened_at == 0.0,
+          f"opened_at={_sp._opened_at}", v)
+
     # 6 — mascots are distinct and non-blank
     seen = {}
     for key in ("openclaw", "codex", "pc"):

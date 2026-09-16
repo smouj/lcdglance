@@ -19,7 +19,12 @@ from ..util.text import clip, age_str
 
 class StatusPage(Page):
     name = "Status"
-    _opened_at = 0.0  # class-level: when the scouter was activated
+
+    def __init__(self):
+        # Instance state: when the scouter was last opened (0 = armed).
+        # A class attribute here would be shadowed by the first instance
+        # assignment, so reset_animation() could never replay the ramp.
+        self._opened_at = 0.0
 
     def render(self, gfx, d, st, oc, dl, ctx):
         s = oc.snapshot()
@@ -119,7 +124,6 @@ class StatusPage(Page):
                 return f"{value:.0f}C"
         return f"{temps[0][1]:.0f}C"
 
-    @classmethod
-    def reset_animation(cls):
-        """Reset the power level animation (call when scouter opens)."""
-        cls._opened_at = 0.0
+    def reset_animation(self):
+        """Re-arm the power level ramp (call when the scouter opens)."""
+        self._opened_at = 0.0

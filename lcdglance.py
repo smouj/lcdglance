@@ -348,7 +348,7 @@ class LCDGlance:
                             threading.Thread(target=self._safe_poll, daemon=True).start()
                             self.scene.show_status(8.0)
                             self.anim.push(AnimState.ALERT, 8.0)
-                            StatusPage.reset_animation()
+                            self.status_page.reset_animation()
                         elif action == "flash_tap":
                             self.scene.flash(0.7)
                             if self.rgb:
