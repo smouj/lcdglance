@@ -1,25 +1,36 @@
-"""SystemPage — CPU / RAM / disk with temps, usage, and sparklines.
+"""SystemPage — CPU / RAM / disk with real units and clean bars.
 
-Layout (160x43):
-  Header: SYSTEM + uptime + clock
-  Line 1: CPU 42% █████░░░░░  54C
-  Line 2: RAM 68% ███████░░░  21.7/32G
-  Line 3: DSK 71% ███████░░░  682G free
-  Line 4: LOAD sparkline ▁▂▃▂▄▆█▅▃▂▁▂▃▂
+Vertical budget for the 160x43 panel:
+    header  0..12   (the shared rule is drawn at y=12)
+    body   13..42   (30 px)
+The small font draws 8 px glyphs, so only THREE text rows fit readably
+(13, 23, 33). A fourth "LOAD" row would either fall off the panel or, if
+packed tighter, collide with the row above — so the load graph lives on
+NetworkPage, where it has the room to be the protagonist.
+
+Bars carry no sparkline overlay: a graph drawn on top of a bar makes both
+unreadable.
 """
 from .base import Page
-from ..util.text import clip, fmt_uptime, fmt_bytes
+from ..util.text import clip, fmt_uptime
 
 
 def _best_temp(temps, default="--"):
-    """Pick the best temperature reading (prefer 'Core' or first CPU temp)."""
+    """Most relevant temperature: core/package before any other sensor."""
     if not temps:
         return default
     for label, value in temps:
         low = label.lower()
-        if "core" in low or "cpu" in low or "package" in low:
+        if "core" in low or "cpu" in low or "package" in low or "tctl" in low:
             return f"{value:.0f}C"
     return f"{temps[0][1]:.0f}C"
+
+
+def _gb(n):
+    """Format a value already in gigabytes: 9.9G, 267G, 1.2T."""
+    if n >= 1024:
+        return f"{n / 1024:.1f}T"
+    return f"{n:.0f}G" if n >= 100 else f"{n:.1f}G"
 
 
 class SystemPage(Page):
@@ -27,47 +38,18 @@ class SystemPage(Page):
 
     def render(self, gfx, d, st, oc, dl, ctx):
         gfx.frame(d, "SYSTEM", fmt_uptime(st.get("uptime", 0)))
+
+        rows = (
+            ("CPU", st.get("cpu", 0), _best_temp(st.get("temps", []))),
+            ("RAM", st.get("mem", 0),
+             f"{st.get('mem_used', 0):.1f}/{st.get('mem_total', 0):.0f}G"),
+            ("DSK", st.get("disk", 0),
+             f"{_gb(st.get('disk_total', 0) - st.get('disk_used', 0))} free"),
+        )
+
         y = 13
-        hist_bufs = ctx.get("hist_bufs", {})
-        temps = st.get("temps", [])
-
-        # CPU line: percentage + bar + temp
-        cpu_pct = st.get("cpu", 0)
-        cpu_temp = _best_temp(temps)
-        gfx.text(d, (3, y), f"CPU {cpu_pct:3.0f}%", small=True)
-        gfx.hbar(d, 50, y + 1, 60, 8, cpu_pct / 100.0)
-        buf = hist_bufs.get("cpu")
-        if buf and len(buf) >= 3:
-            gfx.sparkline(d, 50, y + 1, 60, 8, buf)
-        gfx.text(d, (115, y), cpu_temp, small=True)
-        y += 10
-
-        # RAM line: percentage + bar + used/total
-        ram_pct = st.get("mem", 0)
-        ram_used = st.get("mem_used", 0)
-        ram_total = st.get("mem_total", 0)
-        ram_detail = f"{fmt_bytes(ram_used)}/{fmt_bytes(ram_total)}" if ram_total else ""
-        gfx.text(d, (3, y), f"RAM {ram_pct:3.0f}%", small=True)
-        gfx.hbar(d, 50, y + 1, 60, 8, ram_pct / 100.0)
-        buf = hist_bufs.get("ram")
-        if buf and len(buf) >= 3:
-            gfx.sparkline(d, 50, y + 1, 60, 8, buf)
-        gfx.text(d, (115, y), clip(ram_detail, 16), small=True)
-        y += 10
-
-        # Disk line: percentage + bar + free space
-        disk_pct = st.get("disk", 0)
-        disk_free = fmt_bytes(st.get("disk_total", 0) - st.get("disk_used", 0))
-        gfx.text(d, (3, y), f"DSK {disk_pct:3.0f}%", small=True)
-        gfx.hbar(d, 50, y + 1, 60, 8, disk_pct / 100.0)
-        buf = hist_bufs.get("disk")
-        if buf and len(buf) >= 3:
-            gfx.sparkline(d, 50, y + 1, 60, 8, buf)
-        gfx.text(d, (115, y), f"{disk_free} free", small=True)
-        y += 10
-
-        # Load sparkline
-        buf = hist_bufs.get("cpu")
-        if buf and len(buf) >= 3:
-            gfx.text(d, (3, y), "LOAD", small=True)
-            gfx.sparkline(d, 30, y + 1, 125, 8, buf)
+        for label, pct, detail in rows:
+            gfx.text(d, (3, y), f"{label} {pct:3.0f}%", small=True)
+            gfx.hbar(d, 52, y + 1, 52, 8, pct / 100.0)
+            gfx.text(d, (110, y), clip(str(detail), 11), small=True)
+            y += 10

@@ -58,28 +58,33 @@ color tiñe el teclado RGB.
 
 | # | Página | Contenido | Captura |
 |---|---|---|---|
-| 1 | **NOW** | resumen instantáneo: PC, CLAW, CODEX y red en 4 líneas | ![Now](docs/screens/now.png) |
+| 1 | **NOW** | resumen instantáneo: PC, CLAW y CODEX (red en la cabecera) | ![Now](docs/screens/now.png) |
 | 2 | **Mascot** | mascota + estado/modelo/cuota por fuente (B3 cambia de mascota) | ![Mascot](docs/screens/mascot-claw.png) |
 | 3 | **Sources** | PC / CLAW / CODEX con estado supervisor (OK/BUSY/STALE/OFFLINE) | ![Sources](docs/screens/sources.png) |
-| 4 | **System** | CPU (temp) / RAM (usada/total) / disco (libre) + sparklines | ![System](docs/screens/system.png) |
+| 4 | **System** | CPU (+temp) / RAM (usada/total) / disco (libre), en unidades reales | ![System](docs/screens/system.png) |
 | 5 | **Network** | subida/bajada, pico, sparkline y estado de descarga | ![Network](docs/screens/network.png) |
 | 6 | **OpenClaw** | gateway con estado supervisor, agentes, latencia y backoff | ![OpenClaw](docs/screens/openclaw.png) |
 | 7 | **Codex** | terminal física del agente: WORKING / IDLE / OFFLINE | ![Codex](docs/screens/codex.png) |
 | 8 | **Activity** | timeline de eventos recientes (tareas, descargas, alertas) | ![Activity](docs/screens/activity.png) |
-| 9 | **Alerts** | alertas con modo **invertido** para críticas (CPU>95 %, temp>90°) | ![Alerts](docs/screens/alerts-clear.png) |
+| 9 | **Alerts** | alertas con modo **invertido** para críticas (CPU>95 %, temp>90°) | ![Alerts](docs/screens/alerts-active.png) |
 | 10 | **VPS** | servidor remoto SSH (si se configura `vps_config.json`) | ![VPS](docs/screens/vps.png) |
 | ★ | **Download** | solo con descarga real: progreso, ETA y estado | ![Download](docs/screens/download.png) |
 | ◈ | **Scouter** | **B3 mantenido**: power level animado (0→PL en 300 ms) + análisis | ![Overview](docs/screens/overview.png) |
 | ☾ | **Screensaver** | reloj + mascota dormida + interlude "NOMINAL" cada 12 s | ![Screensaver](docs/screens/screensaver.png) |
-| ✉ | **Event card** | notificación a pantalla completa al terminar tarea/build/descarga | — |
-| ⚙ | **Quick menu** | **B3+B4**: acciones + **Diagnostics** (estado de cada conexión) | — |
+| ⚙ | **Quick menu** | **B3+B4**: acciones del contexto, invertido solo en la opción activa | ![Menu](docs/screens/quickmenu.png) |
+| ✉ | **Event card** | notificación a pantalla completa al terminar tarea/build/descarga | ![Event](docs/screens/eventcard.png) |
 
 ### Alertas activas
 
 Cuando hay problemas la página Alerts pasa de "clear" a una lista con iconos de
 severidad:
 
-![Alertas activas](docs/screens/alerts-active.png)
+| Sin alertas | Con alertas |
+|---|---|
+| ![Alertas clear](docs/screens/alerts-clear.png) | ![Alertas activas](docs/screens/alerts-active.png) |
+
+Si el nivel es crítico (CPU > 95 %, temperatura > 90°), el panel entero se invierte
+para que no puedas ignorarlo.
 
 ### Scouter — B3 mantenido
 
@@ -109,6 +114,14 @@ Cada **12 segundos** interrumpe brevemente la calma con un interludio **`NOMINAL
 2,5 s: un tick grande y CPU / RAM / red, para saber de un vistazo que todo sigue bien.
 
 ![Screensaver](docs/screens/screensaver.png)
+
+### Toasts — avisos breves
+
+Para eventos menores (un agente terminado, un poll forzado) hay un **toast**: una
+banda de 10 px en la parte superior que se superpone a la página sin cambiarla. El
+texto va en negro sobre la barra blanca, y los toasts repetidos se deduplican.
+
+![Toast](docs/screens/toast.png)
 
 ### Event cards — notificaciones de hardware
 
@@ -215,6 +228,7 @@ El **B4 mantenido** refuerza la alerta: flash largo + estado ALERT durante 1,5 s
 ```
 lcdglance.py         aplicación principal (arranque + bucle principal)
 verify.py            autocomprobación: render de todas las páginas sin solapes
+preview.py           genera TODAS las capturas de docs/screens/ (--out para cambiar)
 launch_detached.py   lanzador desacoplado (pythonw + DETACHED_PROCESS)
 configure.py         normaliza la config de applets de LGS
 configure_keys.py    configuración de colores RGB por tecla
@@ -266,6 +280,17 @@ El bucle principal ya no duerme un intervalo fijo: calcula el **próximo deadlin
 (input a 50 Hz, render al FPS del estado actual) y duerme justo hasta el más cercano,
 con un mínimo de 5 ms. Así los 12/24 FPS se alcanzan de verdad cuando hay animación, y
 en reposo no se quema CPU.
+
+### Capturas
+
+Todas las imágenes de `docs/screens/` las genera `preview.py`, que renderiza cada página
+con un estado de sistema realista, **binariza igual que el panel** (`to_mono_bytes`) y
+escribe el PNG a 4×. Regenerarlas es un solo comando, así que la documentación no puede
+quedar desfasada respecto al código:
+
+```bash
+python preview.py
+```
 
 > Las mascotas se dibujan **proceduralmente** (primitivas de Pillow). Existe un
 > renderizador de sprites pixel-art (`src/mascots/sprites.py`) desactivado por defecto

@@ -1,7 +1,14 @@
 """NowPage — instant summary of what's happening right now.
 
-The landing page: PC status, OpenClaw and Codex activity, and network
-speed, all in 4 compact lines. At a glance you know everything.
+The landing page. The panel body only fits THREE 10 px text lines below the
+12 px header (43 - 12 = 31 px), so the network figures live in the header
+line and the body carries the three sources.
+
+Layout (160x43):
+  Header : NOW  <net summary>       HH:MM  ....dots
+  Line 1 : PC     CPU 42%  RAM 68%
+  Line 2 : CLAW   * 2 running
+  Line 3 : CODEX  * editing ...
 """
 import time
 
@@ -14,73 +21,55 @@ class NowPage(Page):
 
     def render(self, gfx, d, st, oc, dl, ctx):
         s = oc.snapshot()
-        srcs = ctx.get("sources", [])
-        active = ctx.get("active_source", {})
         busy = ctx.get("busy", False)
+        dl_snap = dl.snapshot()
+        dl_state = dl_snap.get("state", "idle")
 
-        # Header: NOW + clock
-        gfx.frame(d, "NOW", "all systems" if not busy else "active")
+        # Header carries the network summary; the body only fits 3 lines.
+        # Keep this string short: the frame drops `right` text that would
+        # collide with the title or the clock.
+        dn = st.get("net_dn", 0)
+        if dl_state in ("confirming", "candidate"):
+            head = "* detecting"
+        else:
+            # "v" reads as a down arrow; the full "DN x/y" form is too wide
+            # for the header zone with ten page dots.
+            head = "v" + fmt_speed(dn)
+        gfx.frame(d, "NOW", head)
 
         y = 13
-        # Line 1: PC
+        # Line 1: the PC
         cpu = st.get("cpu", 0)
         mem = st.get("mem", 0)
-        cpu_icon = "!" if cpu > 90 else ("." if cpu > 55 else " ")
-        gfx.text(d, (3, y), f"PC", small=True)
-        gfx.text(d, (22, y), f"{cpu_icon} CPU {cpu:3.0f}%  RAM {mem:3.0f}%", small=True)
+        cpu_mark = "!" if cpu > 90 else ("*" if cpu > 55 else " ")
+        gfx.text(d, (3, y), "PC", small=True)
+        gfx.text(d, (30, y), f"{cpu_mark} CPU {cpu:3.0f}%  RAM {mem:3.0f}%", small=True)
         y += 10
 
         # Line 2: OpenClaw
-        oc_state = s.get("state", "offline")
         if s.get("online") or s.get("state") == "stale":
             running = s.get("running", 0)
             if running > 0:
-                oc_label = f"{running} running"
-            elif s.get("ok", 0) > 0:
-                oc_label = "ok"
+                oc_label, oc_mark = f"{running} running", "*"
+            elif s.get("fail", 0) > 0:
+                oc_label, oc_mark = f"{s.get('fail', 0)} failed", "!"
             else:
-                oc_label = "idle"
-            oc_icon = "*" if running > 0 else " "
+                oc_label, oc_mark = "idle", " "
         else:
-            oc_label = "offline"
-            oc_icon = "x"
+            oc_label, oc_mark = "offline", "x"
         gfx.text(d, (3, y), "CLAW", small=True)
-        gfx.text(d, (30, y), f"{oc_icon} {oc_label}", small=True)
+        gfx.text(d, (38, y), f"{oc_mark} {oc_label}", small=True)
         y += 10
 
         # Line 3: Codex
-        codex_active = s.get("codex_active", False)
-        codex_last = s.get("codex_last", "")
         if s.get("codex_seen"):
-            if codex_active:
-                cx_label = clip(codex_last, 18) if codex_last else "working"
-                cx_icon = "*"
+            if s.get("codex_active"):
+                cx_label, cx_mark = clip(s.get("codex_last", "") or "working", 16), "*"
             else:
-                age = s.get("codex_mtime", 0)
-                if age:
-                    cx_label = f"{age_str(age)} ago"
-                else:
-                    cx_label = "seen"
-                cx_icon = " "
+                mtime = s.get("codex_mtime", 0)
+                cx_label = f"{age_str(mtime)} ago" if mtime else "seen"
+                cx_mark = " "
         else:
-            cx_label = "not found"
-            cx_icon = " "
+            cx_label, cx_mark = "not found", " "
         gfx.text(d, (3, y), "CODEX", small=True)
-        gfx.text(d, (35, y), f"{cx_icon} {cx_label}", small=True)
-        y += 10
-
-        # Line 4: Network + download state
-        dl_snap = dl.snapshot()
-        dn = st.get("net_dn", 0)
-        up = st.get("net_up", 0)
-        dl_state = dl_snap.get("state", "idle")
-        if dl_snap.get("active"):
-            net_line = f"DN {fmt_speed(dn)}  {clip(dl_snap.get('name', dl_snap.get('file', '')), 12)}"
-        elif dl_state == "confirming":
-            net_line = f"DN {fmt_speed(dn)}  confirming..."
-        elif dl_state == "candidate":
-            net_line = f"DN {fmt_speed(dn)}  detecting..."
-        else:
-            net_line = f"DN {fmt_speed(dn)}  UP {fmt_speed(up)}"
-        gfx.text(d, (3, y), "NET", small=True)
-        gfx.text(d, (22, y), net_line, small=True)
+        gfx.text(d, (43, y), f"{cx_mark} {cx_label}", small=True)
