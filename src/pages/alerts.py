@@ -7,7 +7,7 @@ Critical alerts (CPU > 95%, RAM > 95%) use inverted display.
 import time
 
 from .base import Page, _alert_icon
-from ..util.constants import W
+from ..util.constants import W, H
 from ..util.text import clip, age_str
 
 
@@ -49,11 +49,11 @@ class AlertsPage(Page):
         # Critical: inverted full frame
         if any(kind == "fail" for _, kind, _ in items[:1]):
             d.rectangle([0, 0, W - 1, H - 1], fill=255)
-            gfx.text(d, (3, 3), f"! ALERTS ({n})", small=True, fg=0)
+            gfx.text(d, (3, 3), f"! ALERTS ({n})", small=True)
             y = 15
             for ts, kind, text in items[:3]:
                 icon = "!" if kind == "fail" else ("v" if kind == "ok" else ".")
-                gfx.text(d, (3, y), f"{icon} {clip(text, 23)} {age_str(ts)}", small=True, fg=0)
+                gfx.text(d, (3, y), f"{icon} {clip(text, 23)} {age_str(ts)}", small=True)
                 y += 10
             return
 
