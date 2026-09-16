@@ -65,7 +65,8 @@ color tiñe el teclado RGB.
 | 7 | **Alerts** | alertas de sistema y agentes con iconos de severidad | ![Alerts](docs/screens/alerts-clear.png) |
 | 8 | **VPS** | servidor remoto SSH (si se configura `vps_config.json`) | ![VPS](docs/screens/vps.png) |
 | ★ | **Download** | aparece **solo** con una descarga real | ![Download](docs/screens/download.png) |
-| ◈ | **Overview** | vista general completa (B3) | ![Overview](docs/screens/overview.png) |
+| ◈ | **Scouter** | lectura completa bajo demanda (**B3 mantenido**): CPU/RAM/disco, temperatura, gateway, agentes, Codex | ![Overview](docs/screens/overview.png) |
+| ☾ | **Screensaver** | reloj + mascota dormida tras 90 s **sin input ni actividad** | ![Screensaver](docs/screens/screensaver.png) |
 
 ### Alertas activas
 
@@ -74,13 +75,29 @@ severidad:
 
 ![Alertas activas](docs/screens/alerts-active.png)
 
-### Overview (B3)
+### Scouter — B3 mantenido
 
-El **overview** es un overlay a pantalla completa con lectura de sistema:
-barras CPU/RAM/disco, temperatura, frecuencia, gateway, agentes activos, Codex y
-velocidad de red.
+Mantén **B3** medio segundo para ver el scouter: un overlay con la lectura completa del
+sistema (barras CPU/RAM/disco, temperatura, plano de poder, gateway, agentes activos y
+Codex). Se cierra solo a los 8 segundos y vuelve a tu página.
 
 ![Overview](docs/screens/overview.png)
+
+### Screensaver — pantalla de descanso
+
+Tras **90 segundos sin pulsar nada y sin que haya trabajo**, el panel pasa a la pantalla
+de descanso: reloj grande, mascota dormida y `Zzz`, refrescando a solo 2 FPS.
+
+No es un salvapantallas ciego: **cualquier actividad lo despierta** —
+
+- agentes trabajando (OpenClaw o Codex),
+- una descarga en curso,
+- CPU por encima del umbral,
+- un evento reciente (tarea terminada).
+
+Al despertar salta directamente a la **mascota reaccionando** durante 6 s, para que veas
+*qué* se está haciendo y no solo *que* pasa algo. Una pulsación de botón también lo
+cierra, y el menú rápido (`B3+B4`) permite activarlo o desactivarlo a mano.
 
 ---
 
@@ -93,9 +110,12 @@ Toque corto vs. **mantener pulsado** (~0,6 s) — cada botón tiene dos funcione
 | **B1** | Página anterior | Saltar a la 1ª página |
 | **B2** | Página siguiente | Saltar a la última página |
 | **B3** | **Cambiar de mascota**: salta a Mascot y cicla AUTO → PC → CLAW → CODEX | Scouter (plano de poder, temperaturas, gateway) 8 s |
-| **B4** | Flash blanco + toggle alerta RGB | Toggle atenuación nocturna RGB |
-| **B1+B2** | Avance rápido de página | — |
+| **B4** | Flash blanco + toggle alerta RGB manual | Flash largo + estado ALERT 1,5 s |
+| **B1+B2** | Avance rápido de página (3 saltos) | — |
 | **B3+B4** | — | Menú rápido de acciones |
+
+**Atajos mantenidos (≥0,5 s).** Un hold nunca dispara si su compañero de combo también
+está pulsado, así `B1+B2` y `B3+B4` siguen siendo inequívocos.
 
 **B3 — cambiar de mascota.** Cada pulsación avanza a la siguiente mascota y muestra un
 aviso breve (`MASCOT PC`, `MASCOT CLAW`, `MASCOT CODEX`, `MASCOT AUTO`). En `AUTO` el panel
@@ -120,6 +140,9 @@ Motor por prioridad, con respiración y atenuación nocturna automática (23:00�
 alerta manual > agente falló > agente OK > descarga > agentes activos
 > CPU>90 % > RAM>90 % > disco>95 % > color de la mascota activa
 ```
+
+La **atenuación nocturna es automática** (23:00–08:00 al 35 %), no hay botón que la active.
+El **B4 mantenido** refuerza la alerta: flash largo + estado ALERT durante 1,5 s.
 
 ---
 

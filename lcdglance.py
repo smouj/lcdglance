@@ -316,6 +316,14 @@ class LCDGlance:
                             old_page = self.scene.page_index
                             self.scene.next_page()
                             self._start_transition_if_page_changed(old_page)
+                        elif action == "first_page":
+                            old_page = self.scene.page_index
+                            self.scene.page_index = 0
+                            self._start_transition_if_page_changed(old_page)
+                        elif action == "last_page":
+                            old_page = self.scene.page_index
+                            self.scene.page_index = len(self.pages) - 1
+                            self._start_transition_if_page_changed(old_page)
                         elif action == "status_tap":
                             # B3 tap: jump to the Mascot page and cycle the
                             # featured mascot (AUTO -> PC -> CLAW -> CODEX).

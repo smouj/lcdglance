@@ -43,11 +43,6 @@ class SceneDirector:
         return self.pages[self.page_index]
 
     @property
-    def page_index_out(self):
-        """Return the logical page index (for dot indicator)."""
-        return self.page_index
-
-    @property
     def is_animated(self):
         """Whether the current page needs animation-rate updates."""
         now = time.time()
@@ -106,7 +101,3 @@ class SceneDirector:
         if self._override and now > self._override["until"]:
             self._override = None
 
-    @property
-    def override_kind(self):
-        ov = self._override
-        return ov["kind"] if ov else None

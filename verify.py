@@ -15,8 +15,9 @@ Checks
      consecutive ink runs keep a >= 2 px gap.
   5. The Mascot page clock never touches the source label or the separator.
   6. Mascot art is identical across builds: each mascot key produces a
-     distinct bitmap, and none is blank.  The screensaver is activity-aware:
-     it never shows while work is in progress.
+     distinct bitmap, and none is blank.  The screensaver is activity-aware
+     (never shows while work is in progress), and every documented button
+     gesture (tap, hold, combo) produces its action.
 """
 import argparse
 import os
@@ -33,6 +34,7 @@ from src.mascots.sources import build_sources, pick_active, mood_for
 from src.sources.system import NET_HIST
 from src.pages.mascot import MascotPage, _usage_text
 from src.pages.screensaver import ScreensaverPage
+from src.ui.buttons import ButtonHandler
 from src.pages.sources import SourcesPage
 from src.pages.system import SystemPage
 from src.pages.network import NetworkPage
@@ -213,6 +215,59 @@ def main():
           ss.should_show(now, busy=False) is False, "", v)
     check("screensaver: idle_seconds tracks the later of input/activity",
           abs(ss.idle_seconds(now)) < 0.01, f"{ss.idle_seconds(now)}", v)
+
+    # 5d — button handler: taps, holds and combos
+    class _FakeLcd:
+        def __init__(self):
+            self.down = 0
+        def button(self, bit):
+            return bool(self.down & bit)
+
+    def _actions(sequence):
+        """Simulate presses. sequence: [(bitmask, seconds_held), ...].
+
+        Polls repeatedly while a button is down so hold detection (0.5 s)
+        actually gets a chance to fire.
+        """
+        lcd = _FakeLcd()
+        bh = ButtonHandler(lcd)
+        t = 1000.0
+        out = []
+        lcd.down = 0
+        bh.poll(t)                       # prime: released
+        for mask, held_for in sequence:
+            lcd.down = mask              # press edge
+            t += 0.01
+            out += [a for a, _ in bh.poll(t)]
+            steps = max(1, int(round(held_for / 0.1)))
+            for _ in range(steps):       # keep it down
+                t += 0.1
+                out += [a for a, _ in bh.poll(t)]
+            lcd.down = 0                 # release
+            t += 0.2
+            out += [a for a, _ in bh.poll(t)]
+        return out
+
+    from src.util.constants import BTN_1 as _B1, BTN_2 as _B2, BTN_3 as _B3, BTN_4 as _B4
+    acts = _actions([(_B1, 0.05)])
+    check("buttons: B1 tap -> prev", "prev" in acts, str(acts), v)
+    acts = _actions([(_B2, 0.05)])
+    check("buttons: B2 tap -> next", "next" in acts, str(acts), v)
+    acts = _actions([(_B1, 0.60)])
+    check("buttons: B1 hold -> first_page", "first_page" in acts, str(acts), v)
+    acts = _actions([(_B2, 0.60)])
+    check("buttons: B2 hold -> last_page", "last_page" in acts, str(acts), v)
+    acts = _actions([(_B3, 0.05)])
+    check("buttons: B3 tap -> status_tap (mascot)", "status_tap" in acts, str(acts), v)
+    acts = _actions([(_B3, 0.60)])
+    check("buttons: B3 hold -> status_hold (scouter)", "status_hold" in acts, str(acts), v)
+    acts = _actions([(_B1 | _B2, 0.05)])
+    check("buttons: B1+B2 -> combo_12", "combo_12" in acts, str(acts), v)
+    acts = _actions([(_B3 | _B4, 0.05)])
+    check("buttons: B3+B4 -> combo_34 (menu)", "combo_34" in acts, str(acts), v)
+    acts = _actions([(_B1 | _B2, 0.60)])
+    check("buttons: B1+B2 held fires no lone holds",
+          "first_page" not in acts and "last_page" not in acts, str(acts), v)
 
     # 6 — mascots are distinct and non-blank
     seen = {}

@@ -119,10 +119,6 @@ class AnimationController:
         return time.time() < self._blink_until
 
     @property
-    def look_offset(self):
-        return self._look
-
-    @property
     def bob(self):
         """Vertical bob offset for mascot animation."""
         return int(round(1.4 * (2.3 ** (1 / 2) * math.sin(time.time() * 2.3)))) if self.state != AnimState.SLEEP else 0

@@ -17,7 +17,6 @@ class ScreensaverPage(Page):
     """Idle screensaver with clock and sleeping mascot."""
 
     IDLE_TIMEOUT = 90.0      # seconds of no input AND no activity
-    DIM_TIMEOUT = 60.0       # seconds before partial dim
     CLOCK_FORMAT_12 = True   # 12h vs 24h clock
 
     name = "Screensaver"
@@ -52,10 +51,6 @@ class ScreensaverPage(Page):
         if busy:
             return False
         return self.idle_seconds(now) > self.IDLE_TIMEOUT
-
-    def is_dimming(self):
-        """Whether we should start dimming (partial idle)."""
-        return self.idle_seconds() > self.DIM_TIMEOUT
 
     def render(self, gfx, d, st, oc, dl, ctx):
         now = time.time()

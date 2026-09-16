@@ -1,13 +1,15 @@
 """ButtonHandler — detects taps, holds, and combos on the G510's four LCD buttons.
 
-B1/B2 = prev/next page
-B3 = scouter overlay (tap) / refresh OpenClaw (hold)
-B4 = screen flash (tap) / toggle manual RGB alert (hold)
-B1+B2 = cycle pages quickly
-B3+B4 = reserved (future: screensaver toggle)
+B1 = previous page           (tap)  / jump to the first page        (hold)
+B2 = next page               (tap)  / jump to the last page         (hold)
+B3 = cycle the mascot        (tap)  / scouter readout               (hold)
+B4 = flash + toggle RGB alert (tap) / flash + push the ALERT state  (hold)
+B1+B2 = jump forward three pages
+B3+B4 = open the quick menu
 
-Hold detection: a button held for >0.5s triggers the hold action.
-Combos: simultaneous press of two buttons within 150ms.
+Hold detection: a button held for >0.5 s triggers the hold action. A hold
+never fires while its combo partner is also down, so B1+B2 and B3+B4 stay
+unambiguous. Combos are detected on the press edge.
 """
 import time
 
@@ -30,8 +32,9 @@ class ButtonHandler:
     def poll(self, now):
         """Poll buttons and return a list of (action, param) tuples.
 
-        Actions: 'prev', 'next', 'status_tap', 'status_hold',
-                 'flash_tap', 'flash_hold', 'combo_12', 'combo_34'
+        Actions: 'prev', 'next', 'first_page', 'last_page',
+                 'status_tap', 'status_hold', 'flash_tap', 'flash_hold',
+                 'combo_12', 'combo_34'
         """
         actions = []
         cur = 0
@@ -49,9 +52,14 @@ class ButtonHandler:
                 start = self._hold_start.get(bit)
                 if start and (now - start) >= self.HOLD_THRESHOLD and bit not in self._hold_fired:
                     self._hold_fired.add(bit)
-                    if bit == BTN_3:
+                    # Never fire a lone hold while its combo partner is down.
+                    if bit == BTN_1 and not (cur & BTN_2):
+                        actions.append(("first_page", None))
+                    elif bit == BTN_2 and not (cur & BTN_1):
+                        actions.append(("last_page", None))
+                    elif bit == BTN_3 and not (cur & BTN_4):
                         actions.append(("status_hold", None))
-                    elif bit == BTN_4:
+                    elif bit == BTN_4 and not (cur & BTN_3):
                         actions.append(("flash_hold", None))
             if released & bit:
                 self._hold_start.pop(bit, None)
