@@ -55,6 +55,10 @@ from src.util.constants import (
     APP_KILL_INTERVAL, FPS_IDLE, FPS_ANIMATED, FPS_BUSY, FPS_TRANSITION,
     BTN_1, BTN_2, BTN_3, BTN_4, USE_SPRITES,
 )
+
+# Scheduler: input polls at ~50 Hz (20 ms), render at variable FPS
+INPUT_INTERVAL = 0.020   # 50 Hz for button polling
+MIN_SLEEP = 0.005        # never sleep less than 5 ms
 from src.util.text import ascii_text, clip, fmt_speed, fmt_bytes, fmt_uptime, age_str
 from src.util.ringbuf import RingBuffer
 from src.render.bitmap import to_mono_bytes, mono_to_image
@@ -475,7 +479,15 @@ class LCDGlance:
                             self._last_bitmap = data
                             self._last_submit = now
 
-                time.sleep(LOOP_INTERVAL)
+                # Deadline-based sleep: wake for next input poll or render,
+                # whichever is sooner. Input always runs at 50 Hz minimum.
+                next_input = now + INPUT_INTERVAL
+                next_render = self._last_render + interval if fps > 0 else now + 1.0
+                next_event = min(next_input, next_render)
+                sleep_until = max(next_event, now + MIN_SLEEP)
+                delay = sleep_until - time.time()
+                if delay > MIN_SLEEP:
+                    time.sleep(delay)
             except Exception:
                 traceback.print_exc()
                 time.sleep(1.0)

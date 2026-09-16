@@ -136,7 +136,7 @@ class DownloadDetector:
 
     def snapshot(self):
         return {
-            "active": self.active, "name": self.name,
+            "active": self.active, "state": self.state, "name": self.name,
             "speed": self.speed, "peak": self.peak,
             "total_mb": self.total_mb, "file": self.file,
             "file_mb": self.file_mb,
