@@ -1,23 +1,23 @@
-"""ScreensaverPage — idle animation with clock and sleeping mascots.
+"""ScreensaverPage — idle animation with clock, sleeping mascot, and
+periodic system-nominal interlude.
 
-Activates only after 90 s of no button input AND no system activity. It is
-a rest screen: it must never hide work in progress. Any button press, or any
-real activity (agents running, a download, heavy CPU, a fresh event) wakes
-the panel and returns it to the working view.
-
-The screensaver renders at only 2 FPS to keep CPU usage low while idle.
+Activates only after 90 s of no button input AND no system activity.
+Never hides work in progress. Every 12 seconds, briefly shows system
+status (CPU/RAM) before returning to the sleeping mascot.
 """
 import time
 
 from .base import Page
 from ..util.constants import W
+from ..util.text import fmt_speed
 
 
 class ScreensaverPage(Page):
-    """Idle screensaver with clock and sleeping mascot."""
+    """Idle screensaver with clock, sleeping mascot, and status interlude."""
 
-    IDLE_TIMEOUT = 90.0      # seconds of no input AND no activity
-    CLOCK_FORMAT_12 = True   # 12h vs 24h clock
+    IDLE_TIMEOUT = 90.0
+    INTERLUDE_EVERY = 12.0   # seconds between system-nominal flashes
+    INTERLUDE_DURATION = 2.5  # how long the interlude lasts
 
     name = "Screensaver"
 
@@ -27,39 +27,37 @@ class ScreensaverPage(Page):
         self._phase = 0.0
 
     def feed_input(self, now):
-        """Call when any button is pressed to reset the idle timer."""
         self.last_input = now
 
     def feed_activity(self, now):
-        """Call while the machine or the agents are working.
-
-        Activity keeps the screensaver away so the panel shows the work in
-        progress instead of the clock.
-        """
         self.last_activity = now
 
     def idle_seconds(self, now=None):
-        """Seconds since the last button press or activity, whichever is later."""
         now = now if now is not None else time.time()
         return now - max(self.last_input, self.last_activity)
 
     def should_show(self, now=None, busy=False):
-        """Whether the screensaver should be active.
-
-        Never while *busy*: if something is being done the panel must show it.
-        """
         if busy:
             return False
         return self.idle_seconds(now) > self.IDLE_TIMEOUT
 
     def render(self, gfx, d, st, oc, dl, ctx):
         now = time.time()
-        self._phase += 0.05  # slow animation
-
+        self._phase += 0.05
         mascot = ctx.get("mascot")
-        mood = "idle"  # sleeping is shown via low-FPS bob, not a separate mood
 
-        # Draw sleeping mascot on the left (gentle bob at 2 FPS)
+        # Decide: show mascot+clock or system-nominal interlude
+        idle_time = self.idle_seconds(now)
+        cycle_pos = idle_time % self.INTERLUDE_EVERY
+        show_interlude = cycle_pos > (self.INTERLUDE_EVERY - self.INTERLUDE_DURATION)
+
+        if show_interlude:
+            self._render_interlude(gfx, d, st, oc, dl, now)
+        else:
+            self._render_mascot(gfx, d, st, mascot, now)
+
+    def _render_mascot(self, gfx, d, st, mascot, now):
+        """Sleeping mascot with clock and zzz."""
         bob = int(round(0.7 * (1.0 + 1.0 * (now % 3.0 - 1.5) / 1.5)))
         if mascot:
             mascot.draw(d, "openclaw", 30, 20 + bob, "idle", busy=False)
@@ -71,32 +69,52 @@ class ScreensaverPage(Page):
                     d.point((zx, zy), fill=255)
                     d.point((zx + 1, zy), fill=255)
 
-        # Separator line
+        # Separator
         d.line([(58, 1), (58, 41)], fill=255)
 
-        # Clock on the right side
+        # Clock
         t = time.localtime()
-        if self.CLOCK_FORMAT_12:
-            h = t.tm_hour % 12 or 12
-            period = "AM" if t.tm_hour < 12 else "PM"
-            time_str = f"{h}:{t.tm_min:02d}"
-            gfx.text(d, (64, 8), time_str)
-            gfx.text(d, (64, 22), period, small=True)
-        else:
-            time_str = f"{t.tm_hour}:{t.tm_min:02d}"
-            gfx.text(d, (64, 10), time_str)
+        h = t.tm_hour % 12 or 12
+        period = "AM" if t.tm_hour < 12 else "PM"
+        gfx.text(d, (64, 8), f"{h}:{t.tm_min:02d}")
+        gfx.text(d, (64, 22), period, small=True)
 
-        # Date below
-        date_str = f"{t.tm_mday}/{t.tm_mon}"
-        gfx.text(d, (64, 32), date_str, small=True)
+        # Date
+        days = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+        day_str = days[t.tm_wday]
+        gfx.text(d, (64, 32), f"{day_str} {t.tm_mday}/{t.tm_mon}", small=True)
 
-        # Breathing indicator (subtle brightness pulse on the line)
-        breath = 0.5 + 0.5 * (0.5 + 0.5 * (now % 4.0 / 4.0 * 6.28))
-        # In mono, we can't do brightness; instead, vary the dot pattern
-        dot_x = 58
-        dot_y = 21
+        # Breathing dot
         if int(now * 0.5) % 2 == 0:
-            d.point((dot_x, dot_y), fill=255)
+            d.point((58, 21), fill=255)
 
-        # Page dots (smaller, dimmer)
         gfx.page_dots(d)
+
+    def _render_interlude(self, gfx, d, st, oc, dl, now):
+        """System nominal flash: CPU/RAM/NET summary."""
+        gfx.frame(d, "NOMINAL", "")
+
+        y = 13
+        cpu = st.get("cpu", 0)
+        mem = st.get("mem", 0)
+        dn = st.get("net_dn", 0)
+
+        # Checkmark icon
+        cx, cy = 80, 20
+        d.line([(cx - 6, cy), (cx - 2, cy + 4)], fill=255)
+        d.line([(cx - 2, cy + 4), (cx + 6, cy - 5)], fill=255)
+
+        gfx.text(d, (3, y), f"CPU {cpu:3.0f}%  RAM {mem:3.0f}%", small=True)
+        y += 10
+        gfx.text(d, (3, y), f"DN {fmt_speed(dn)}", small=True)
+        y += 10
+
+        s = oc.snapshot()
+        if s.get("online"):
+            running = s.get("running", 0)
+            if running:
+                gfx.text(d, (3, y), f"AGENTS {running} running", small=True)
+            else:
+                gfx.text(d, (3, y), "all quiet", small=True)
+        else:
+            gfx.text(d, (3, y), "gateway offline", small=True)

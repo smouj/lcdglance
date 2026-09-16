@@ -6,18 +6,14 @@ B2: next option
 B3: select current option
 B4: cancel / close menu
 
-Options are dynamic based on current context:
-  - Network: toggle DNS, flush cache
-  - OpenClaw: restart gateway, poll now
-  - System: task manager
-  - VPS: reconnect
-  - Display: toggle screensaver
+Options are dynamic based on current context, including a Diagnostics
+entry that shows connection supervisor states for LCD, RGB, OpenClaw, VPS.
 """
 import time
 
 from .base import Page
 from ..util.constants import W
-from ..util.text import clip, ascii_text
+from ..util.text import clip, ascii_text, age_str
 
 
 class QuickMenuPage(Page):
@@ -48,7 +44,9 @@ class QuickMenuPage(Page):
 
         # Network items
         self.items.append(("DNS Flush", "dns_flush", "Flush DNS cache"))
-        self.items.append(("Net Reset", "net_reset", "Reset network adapter"))
+
+        # Diagnostics
+        self.items.append(("Diagnostics", "diagnostics", "Show connection states"))
 
         # Display items
         self.items.append(("Screensaver", "screensaver", "Toggle screensaver mode"))
@@ -77,7 +75,7 @@ class QuickMenuPage(Page):
         n_items = len(self.items)
         gfx.frame(d, "MENU", f"{self.selected + 1}/{n_items}")
 
-        # Show 3 items at a time, with the selected one highlighted
+        # Show 3 items at a time, selected highlighted
         visible_start = max(0, self.selected - 1)
         visible_end = min(n_items, visible_start + 3)
 
@@ -87,7 +85,6 @@ class QuickMenuPage(Page):
             is_sel = (i == self.selected)
 
             if is_sel:
-                # Highlight: filled bar behind the text
                 d.rectangle([0, y, W - 1, y + 9], fill=255)
                 gfx.text(d, (3, y), clip(f"> {name}", 24), small=True)
             else:
@@ -98,3 +95,76 @@ class QuickMenuPage(Page):
         if self.items and 0 <= self.selected < len(self.items):
             _, _, desc = self.items[self.selected]
             gfx.text(d, (3, 36), clip(desc, 30), small=True)
+
+
+class DiagnosticsPage(Page):
+    """Show connection supervisor states for LCD, RGB, OpenClaw, VPS."""
+    name = "Diagnostics"
+
+    def render(self, gfx, d, st, oc, dl, ctx):
+        gfx.frame(d, "DIAGNOSTICS", "connections")
+
+        y = 13
+        # Gather health from supervisors
+        components = []
+
+        # LCD
+        try:
+            lcd_health = ctx.get("lcd_health", {})
+            if lcd_health:
+                state = lcd_health.get("state", "?")
+                age = lcd_health.get("state_age", "?")
+                components.append(("LCD", state, age))
+            else:
+                components.append(("LCD", "n/a", ""))
+        except Exception:
+            components.append(("LCD", "err", ""))
+
+        # RGB
+        try:
+            rgb_health = ctx.get("rgb_health", {})
+            if rgb_health:
+                state = rgb_health.get("state", "?")
+                age = rgb_health.get("state_age", "?")
+                components.append(("RGB", state, age))
+            else:
+                components.append(("RGB", "n/a", ""))
+        except Exception:
+            components.append(("RGB", "err", ""))
+
+        # OpenClaw
+        s = oc.snapshot()
+        oc_state = s.get("state", s.get("online") and "online" or "offline")
+        oc_age = s.get("state_age", "")
+        oc_latency = s.get("latency", 0)
+        lat_str = f" {oc_latency:.1f}s" if oc_latency > 0 else ""
+        components.append(("CLAW", oc_state, f"{oc_age}{lat_str}"))
+
+        # VPS (if enabled)
+        vps_snap = ctx.get("vps_snapshot", {})
+        if vps_snap and vps_snap.get("enabled"):
+            vps_state = vps_snap.get("state", vps_snap.get("online") and "online" or "offline")
+            components.append(("VPS", vps_state, vps_snap.get("state_age", "")))
+
+        for name, state, detail in components[:4]:
+            # State icon
+            if state == "online":
+                d.ellipse([4, y + 1, 10, y + 7], fill=255)
+            elif state == "stale":
+                d.rectangle([4, y + 1, 10, y + 7], outline=255)
+            elif state == "connecting":
+                d.rectangle([4, y + 1, 10, y + 7], fill=255)
+            else:
+                d.line([(4, y + 1), (10, y + 7)], fill=255)
+                d.line([(4, y + 7), (10, y + 1)], fill=255)
+
+            gfx.text(d, (14, y), f"{name} {state}", small=True)
+            if detail:
+                gfx.text(d, (80, y), clip(detail, 16), small=True)
+            y += 10
+
+        # Fail counts
+        y = min(y, 36)
+        fail_count = s.get("fail_count", 0)
+        if fail_count > 0:
+            gfx.text(d, (3, y), f"OC fails: {fail_count}", small=True)

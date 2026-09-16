@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LCDGlance v9.1 — Logitech G510 (160×43 mono LCD), modular edition.
+LCDGlance v10 — Logitech G510 (160×43 mono LCD), modular edition.
 
 Architecture:
   src/          Package with all subsystems
@@ -89,7 +89,7 @@ from src.pages.vps_page import VPSPage
 from src.pages.screensaver import ScreensaverPage
 from src.pages.now import NowPage
 from src.pages.activity import ActivityPage
-from src.pages.quickmenu import QuickMenuPage
+from src.pages.quickmenu import QuickMenuPage, DiagnosticsPage
 from src.anim.controller import AnimationController, AnimState
 from src.anim.scene import SceneDirector
 from src.anim.transition import TransitionEngine
@@ -131,6 +131,8 @@ class LCDGlance:
         self.buttons = None  # initialised after LCD connect
         self.screensaver = ScreensaverPage()
         self.quickmenu = QuickMenuPage()
+        self.diagnostics = DiagnosticsPage()
+        self._in_diagnostics = False
 
         # RGB
         self.rgb = None
@@ -162,7 +164,7 @@ class LCDGlance:
 
     # ---- lifecycle
     def start(self):
-        print("LCDGlance v9.1 — G510 mascots + RGB + animations + clock", flush=True)
+        print("LCDGlance v10 — reliability + UX + diagnostics", flush=True)
         print("=" * 60, flush=True)
 
         if not HAS_PIL:
@@ -210,9 +212,9 @@ class LCDGlance:
         """Show a startup splash screen for 2 seconds."""
         img, d = self.gfx.canvas()
         self.mascot.draw(d, "openclaw", 28, 21, "happy")
-        self.gfx.text(d, (56, 6), "LCDGlance v9.1")
+        self.gfx.text(d, (56, 6), "LCDGlance v10")
         self.gfx.text(d, (56, 20), "PC / CLAW / CODEX", small=True)
-        self.gfx.text(d, (56, 31), "mascots + clock", small=True)
+        self.gfx.text(d, (56, 31), "reliability + UX + diagnostics", small=True)
         if self.lcd.connected:
             self.lcd.submit(to_mono_bytes(img))
             self.lcd.update()
@@ -339,6 +341,7 @@ class LCDGlance:
                             threading.Thread(target=self._safe_poll, daemon=True).start()
                             self.scene.show_status(8.0)
                             self.anim.push(AnimState.ALERT, 8.0)
+                            StatusPage.reset_animation()
                         elif action == "flash_tap":
                             self.scene.flash(0.7)
                             if self.rgb:
@@ -415,7 +418,9 @@ class LCDGlance:
                 # Render LCD frame
                 if self.lcd.connected:
                     # Determine which page to render
-                    if self._in_quickmenu:
+                    if self._in_diagnostics:
+                        page = self.diagnostics
+                    elif self._in_quickmenu:
                         page = self.quickmenu
                     elif self._in_screensaver:
                         page = self.screensaver
@@ -444,12 +449,18 @@ class LCDGlance:
                             "disk": DISK_HIST_BUF.values,
                         }
 
+                        # Gather health for diagnostics
+                        lcd_health = self.lcd.health() if hasattr(self.lcd, 'health') else {}
+                        rgb_health = self.led.health() if hasattr(self.led, 'health') else {}
+
                         ctx = {
                             "mascot": self.mascot, "sources": sources,
                             "active_source": active,
                             "mood": mood_for(st, self.oc, self.dl, active),
                             "load": load, "busy": busy,
                             "vps_snapshot": self.vps.snapshot(),
+                            "lcd_health": lcd_health,
+                            "rgb_health": rgb_health,
                             "hist_bufs": hist_bufs,
                             "anim_state": anim_state,
                             "interaction": interaction,
@@ -568,6 +579,8 @@ class LCDGlance:
             self.toast.push("DNS flushed", "ok", 1.5)
         elif action == "net_reset":
             self.toast.push("Net reset not yet wired", "warn", 2.0)
+        elif action == "diagnostics":
+            self._in_diagnostics = True
         elif action == "screensaver":
             self._in_screensaver = True
             # Push both timers far in the past so it stays on until real
