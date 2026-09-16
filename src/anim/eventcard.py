@@ -64,8 +64,8 @@ class EventCardManager:
         # Icon glyph on the left of the title bar (drawn in inverse = black)
         self._icon(d, 4, 14, icon)
 
-        # Title after the icon
-        gfx.text(d, (18, 13), clip(title, 22), small=True)
+        # Title after the icon (inverse: black on the white bar)
+        gfx.text(d, (18, 13), clip(title, 22), small=True, fill=0)
 
         # Detail lines below the bar
         y = 25

@@ -30,7 +30,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.util.constants import W, H, BITMAP_SIZE, MASCOT_NAME
+from src.util.constants import W, H, BITMAP_SIZE, MASCOT_NAME, BIN_THRESHOLD
 from src.render.gfx import Gfx
 from src.render.bitmap import to_mono_bytes
 from src.mascots.mascot import MascotRenderer
@@ -234,6 +234,33 @@ def main():
     img_ap, d_ap = gfx.canvas()
     ap.render(gfx, d_ap, {}, oc, dl, {})
     check("Activity page renders", True, "no error", v)
+
+    # 5b2b — inverse text is actually visible (regression: white-on-white)
+    from src.anim.toast import ToastManager
+    tm = ToastManager()
+    tm.push("HELLO INVERSE", "info", 2.0)
+    img_t, d_t = Gfx.canvas()
+    gfx.dots = (0, 1)
+    _drawn = tm.render(d_t, gfx, time.time())
+    # The toast bar is y=0..10 and filled white. If the text were also white
+    # the bar would be a solid block; count BLACK pixels inside the bar.
+    # Text is antialiased: count pixels that binarise to black on the panel.
+    _bar_pixels = [img_t.getpixel((x, y))
+                   for y in range(11) for x in range(W)]
+    _dark_in_bar = sum(1 for v in _bar_pixels if v <= BIN_THRESHOLD)
+    check("toast: inverse text visible on white bar",
+          _drawn and _dark_in_bar > 40, f"{_dark_in_bar} dark px", v)
+
+    from src.anim.eventcard import EventCardManager as _ECM
+    _ec = _ECM()
+    _ec.push("ok", "BUILD COMPLETE", ["138 TESTS PASSED"], 2.0)
+    img_e, d_e = Gfx.canvas()
+    _ec.render(d_e, gfx, time.time())
+    _card_pixels = [img_e.getpixel((x, y))
+                    for y in range(11, 23) for x in range(W)]
+    _dark_in_card = sum(1 for v in _card_pixels if v <= BIN_THRESHOLD)
+    check("eventcard: inverse title visible on white bar",
+          _dark_in_card > 40, f"{_dark_in_card} dark px", v)
 
     # 5b3 — Codex page renders
     from src.pages.codex import CodexPage

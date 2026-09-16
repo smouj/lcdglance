@@ -90,8 +90,8 @@ class ToastManager:
         else:
             icon_x += 2
 
-        # Text in inverse (black on white)
-        gfx.text(d, (icon_x, 0), clip(text, 28), small=True)
+        # Text in inverse (black on the white bar)
+        gfx.text(d, (icon_x, 0), clip(text, 28), small=True, fill=0)
 
         # Fade-out effect: last 0.3s, render every other frame
         if remaining < 0.3 and int(now * 8) % 2 == 0:

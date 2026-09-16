@@ -48,12 +48,14 @@ class AlertsPage(Page):
         n = len(items)
         # Critical: inverted full frame
         if any(kind == "fail" for _, kind, _ in items[:1]):
+            # Full inverse frame: everything must be drawn in BLACK
             d.rectangle([0, 0, W - 1, H - 1], fill=255)
-            gfx.text(d, (3, 3), f"! ALERTS ({n})", small=True)
+            gfx.text(d, (3, 3), f"! ALERTS ({n})", small=True, fill=0)
             y = 15
             for ts, kind, text in items[:3]:
                 icon = "!" if kind == "fail" else ("v" if kind == "ok" else ".")
-                gfx.text(d, (3, y), f"{icon} {clip(text, 23)} {age_str(ts)}", small=True)
+                gfx.text(d, (3, y), f"{icon} {clip(text, 23)} {age_str(ts)}",
+                         small=True, fill=0)
                 y += 10
             return
 

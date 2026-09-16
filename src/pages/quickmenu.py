@@ -85,8 +85,9 @@ class QuickMenuPage(Page):
             is_sel = (i == self.selected)
 
             if is_sel:
+                # White bar → text must be black to be readable
                 d.rectangle([0, y, W - 1, y + 9], fill=255)
-                gfx.text(d, (3, y), clip(f"> {name}", 24), small=True)
+                gfx.text(d, (3, y), clip(f"> {name}", 24), small=True, fill=0)
             else:
                 gfx.text(d, (5, y), clip(name, 24), small=True)
             y += 10

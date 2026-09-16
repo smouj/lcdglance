@@ -131,8 +131,9 @@ class Gfx:
         img = Image.new("L", (W, H), 0)
         return img, ImageDraw.Draw(img)
 
-    def text(self, d, xy, s, small=False):
-        d.text(xy, ascii_text(s), font=(self.font_small if small else self.font), fill=255)
+    def text(self, d, xy, s, small=False, fill=255):
+        """Draw *s* at *xy*. fill=0 renders inverse (black on a white bar)."""
+        d.text(xy, ascii_text(s), font=(self.font_small if small else self.font), fill=fill)
 
     @staticmethod
     def hline(d, y, x0=0, x1=W - 1):
