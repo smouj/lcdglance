@@ -16,13 +16,38 @@ except ImportError:
 from ..util.constants import (
     DL_DIRS, DL_HINTS, DL_MIN_GROWTH_MB, DL_MIN_NET_MB,
     DL_MIN_STREAK, DL_MIN_TOTAL_MB, DL_QUIET_STOP,
+    DL_QUIET_STALL, DL_IDLE_TICKS,
 )
 
 
 class DownloadDetector:
+    """Detects a genuine sustained download and exposes its phase.
+
+    State machine (every state is reachable and every transition is written
+    down here — self.state used to be born "idle" and never change, so the
+    candidate / confirming / stalled views were dead code):
+
+        IDLE ──traffic, no file growth──▶ CANDIDATE ──file growing──▶ CONFIRMING
+          ▲                                   │                          │
+          │                        no traffic │        streak+total met  │
+          └───────────────────────────────────┘                          ▼
+        IDLE ◀──quiet > DL_QUIET_STOP── STALLED ◀──quiet ≥ DL_QUIET_STALL── ACTIVE
+                                          └──data resumes──────────────────▶ ACTIVE
+
+    `active` stays True through ACTIVE and STALLED: a stalled transfer is
+    still the thing the panel is watching. Only a real end of transfer
+    clears it, so the "download complete" card cannot fire on a stall.
+    """
+
+    IDLE = "idle"
+    CANDIDATE = "candidate"
+    CONFIRMING = "confirming"
+    ACTIVE = "active"
+    STALLED = "stalled"
+
     def __init__(self):
         self.active = False
-        self.state = "idle"
+        self.state = self.IDLE
         self.name = ""
         self.speed = 0.0
         self.peak = 0.0
@@ -36,6 +61,7 @@ class DownloadDetector:
         self._files = {}
         self._streak = 0
         self._quiet = 0
+        self._idle_ticks = 0
         self._name_t = 0.0
         self._name_cached = ""
 
@@ -100,39 +126,56 @@ class DownloadDetector:
         self._last_rx = rx
         self._last_rx_time = now_mono
 
-        if rx_rate < DL_MIN_NET_MB and not self.active:
-            self._streak = 0
-            self.total_mb = 0.0
-            return
-
-        found = self._fastest_growing()
-        qualifies = (found is not None
-                     and found[2] >= DL_MIN_GROWTH_MB
-                     and rx_rate >= DL_MIN_NET_MB)
+        net_active = rx_rate >= DL_MIN_NET_MB
+        found = self._fastest_growing() if net_active else None
+        qualifies = (found is not None and found[2] >= DL_MIN_GROWTH_MB)
 
         if qualifies:
+            # A file is growing and the link is carrying traffic.
             self._quiet = 0
+            self._idle_ticks = 0
             self._streak += 1
             self.speed = rx_rate
             self.total_mb += found[2]
             self.file, self.file_mb = found[0], found[1]
             self.peak = max(self.peak, self.speed)
+
             if not self.active and self._streak >= DL_MIN_STREAK \
                     and self.total_mb >= DL_MIN_TOTAL_MB:
+                # Sustained enough to be trusted: leave candidate/confirming.
                 self.active = True
                 self.started = now
+            self.state = self.ACTIVE if self.active else self.CONFIRMING
             if self.active:
                 self.name = self._downloader_name() or self.name or found[0]
+            return
+
+        # Nothing is growing (or no traffic to grow through).
+        self._streak = 0
+
+        if self.active:
+            self._quiet += 1
+            if self._quiet >= DL_QUIET_STALL:
+                self.state = self.STALLED
+            if self._quiet > DL_QUIET_STOP:
+                self.state = self.IDLE
+                self.active = False
+                self.speed = 0.0
+                self.total_mb = 0.0
+                self._quiet = 0
+                self.started = 0.0
+            return
+
+        if net_active:
+            # Traffic without a growing file: candidate download.
+            self._idle_ticks = 0
+            self._quiet = 0
+            self.state = self.CANDIDATE
         else:
-            self._streak = 0
-            if self.active:
-                self._quiet += 1
-                if self._quiet > DL_QUIET_STOP:
-                    self.active = False
-                    self._quiet = 0
-                    self.speed = 0.0
-                    self.total_mb = 0.0
-            else:
+            self._quiet = 0
+            self._idle_ticks += 1
+            if self._idle_ticks >= DL_IDLE_TICKS and self.state != self.IDLE:
+                self.state = self.IDLE
                 self.total_mb = 0.0
 
     def snapshot(self):

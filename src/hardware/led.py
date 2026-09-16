@@ -46,18 +46,26 @@ class LEDController:
         return time.time() < self._hw_until
 
     def ensure_connected(self):
-        """Reconnect RGB if it dropped and backoff allows."""
-        import time as _t
-        now = _t.time()
+        """Reconnect RGB if it dropped and backoff allows.
+
+        connect() already calls mark_failure() on every failure path; the
+        extra call here keeps any custom/subclass connect() from stranding
+        the supervisor in CONNECTING (should_reconnect only fires from
+        OFFLINE, exactly like the LCD controller).
+        """
+        now = time.time()
         if self.connected and self.led:
             self.sup.mark_online()
             return True
         if self.sup.should_reconnect(now):
             self.sup.mark_connecting()
-            result = self.connect()
-            if not result:
-                self.sup.next_backoff()
-            return result
+            if self.connect():
+                self.sup.mark_online()
+                self.sup.reset_backoff()
+                return True
+            self.sup.mark_failure("connect failed")
+            self.sup.next_backoff()
+            return False
         return False
 
     def health(self):

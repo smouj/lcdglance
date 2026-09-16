@@ -17,7 +17,15 @@ class DownloadPage(Page):
         s = dl.snapshot()
         state = s.get("state", "idle")
 
-        if s.get("active"):
+        if state == "stalled":
+            # A stalled transfer is still `active` (the panel keeps watching
+            # it); the stall view is what tells the user data stopped moving.
+            gfx.frame(d, "DOWNLOAD", "stalled")
+            gfx.text(d, (3, 20), "download stalled", small=True)
+            gfx.text(d, (3, 30),
+                     f"{fmt_bytes(s.get('total_mb', 0))}  waiting for data...",
+                     small=True)
+        elif s.get("active"):
             elapsed = int(s.get("elapsed", 0))
             speed = s.get("speed", 0)
             total_mb = s.get("total_mb", 0)
@@ -43,10 +51,6 @@ class DownloadPage(Page):
             gfx.frame(d, "DOWNLOAD", "detecting")
             gfx.text(d, (3, 20), "network activity detected", small=True)
             gfx.text(d, (3, 30), f"DN {fmt_speed(st.get('net_dn', 0))}", small=True)
-        elif state == "stalled":
-            gfx.frame(d, "DOWNLOAD", "stalled")
-            gfx.text(d, (3, 20), "download stalled", small=True)
-            gfx.text(d, (3, 30), "waiting for data...", small=True)
         else:
             # Idle — should not normally be shown
             gfx.frame(d, "DOWNLOAD", "none")

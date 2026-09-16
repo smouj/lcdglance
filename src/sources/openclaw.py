@@ -78,7 +78,15 @@ class OpenClawMonitor:
                 return
             out = r.stdout.decode("utf-8", errors="replace")
             if not out.strip():
-                self.sup.mark_stale("empty output")
+                # The probe process answered but produced no data: the link is
+                # broken, not healthy. Previously this marked STALE and then
+                # the same poll fell through to mark_online() at the bottom,
+                # so the two halves of the state disagreed. Fail here, let the
+                # supervisor (the single source of truth) decide the state.
+                self.sup.mark_failure("empty output")
+                with self._lock:
+                    self.online = self.sup.is_online
+                return
             now = time.time()
             new_alerts, new_events = [], []
             ok = fail = total = 0
@@ -182,10 +190,6 @@ class OpenClawMonitor:
             with self._lock:
                 self.sup.mark_failure(str(exc)[:120])
                 self.online = self.sup.is_online
-
-    def health(self):
-        """Return supervisor snapshot for diagnostics."""
-        return self.sup.snapshot()
 
     def health(self):
         """Return supervisor snapshot for diagnostics."""

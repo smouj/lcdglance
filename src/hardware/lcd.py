@@ -50,23 +50,37 @@ class LCDController:
             return False
 
     def ensure_connected(self, now=None):
-        import time as _t
-        now = now or _t.time()
+        """Health-check the panel, then reconnect through the supervisor backoff.
+
+        Every failure path must record a failure. Previously a failed
+        connect() left the supervisor in CONNECTING, and should_reconnect()
+        only fires from OFFLINE — so the LCD stayed dead until a restart.
+        A failed health check was not recorded either.
+        """
+        now = now or time.time()
         if self.connected and self.lcd:
             try:
-                if self.lcd.LogiLcdIsConnected(LOGI_LCD_TYPE_MONO):
-                    self.sup.mark_online()
-                    return True
-            except Exception:
-                pass
-        # Health check failed or never connected — try reconnect if backoff allows
+                alive = bool(self.lcd.LogiLcdIsConnected(LOGI_LCD_TYPE_MONO))
+                detail = "panel reports disconnected"
+            except Exception as exc:
+                alive = False
+                detail = f"health check error: {exc}"
+            if alive:
+                self.sup.mark_online()
+                return True
+            self.sup.mark_failure(detail[:120])
+            self.shutdown()
+
         if self.sup.should_reconnect(now):
             self.sup.mark_connecting()
             self.shutdown()
-            result = self.connect()
-            if not result:
-                self.sup.next_backoff()
-            return result
+            if self.connect():
+                self.sup.mark_online()
+                self.sup.reset_backoff()
+                return True
+            self.sup.mark_failure("connect failed")
+            self.sup.next_backoff()
+            return False
         return self.connected
 
     def button(self, bit):

@@ -37,6 +37,8 @@ DL_MIN_NET_MB    = 0.15
 DL_MIN_STREAK    = 4
 DL_MIN_TOTAL_MB  = 3.0
 DL_QUIET_STOP    = 12
+DL_QUIET_STALL   = 2       # quiet ticks (1 s each) before a download reads STALLED
+DL_IDLE_TICKS    = 2       # quiet ticks before a candidate/confirming read goes IDLE
 
 # ─── OpenClaw task statuses ────────────────────────────────────────
 TERMINAL_OK  = {"succeeded"}
@@ -100,7 +102,20 @@ DL_HINTS = (
 
 # ─── Paths ──────────────────────────────────────────────────────────
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SEEN_FILE        = os.path.join(HERE, "oc_seen.json")
+
+# Runtime state (seen task ids, logs) lives OUTSIDE the repository:
+# %LOCALAPPDATA%\LCDGlance on Windows, ~/.local/state/LCDGlance elsewhere.
+_STATE_BASE = os.environ.get("LOCALAPPDATA") or os.path.join(
+    os.path.expanduser("~"), ".local", "state")
+STATE_DIR = os.path.join(_STATE_BASE, "LCDGlance")
+
+try:
+    os.makedirs(STATE_DIR, exist_ok=True)
+except OSError:
+    pass
+
+SEEN_FILE        = os.path.join(STATE_DIR, "oc_seen.json")
+LOG_FILE         = os.path.join(STATE_DIR, "lcdglance.log")
 VPS_CONFIG_FILE  = os.path.join(HERE, "vps_config.json")
 WSL_CMD = ["wsl.exe", "-d", "Ubuntu-24.04", "-e", "bash", "-lc", "lcd-probe"]
 CREATE_NO_WINDOW  = 0x08000000

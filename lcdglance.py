@@ -137,6 +137,7 @@ class LCDGlance:
         self.diagnostics = DiagnosticsPage()
         self._in_diagnostics = False
         self._dl_was_active = False
+        self._last_event_card_ts = 0.0
 
         # RGB
         self.rgb = None
@@ -308,6 +309,14 @@ class LCDGlance:
                         self._last_input = now
                         self.screensaver.feed_input(now)
 
+                        if self._in_diagnostics:
+                            # Any press closes Diagnostics. Without this the
+                            # flag stayed True forever and every button kept
+                            # driving the pages hidden underneath.
+                            self._in_diagnostics = False
+                            self.toast.push("Diagnostics closed", "info", 1.2)
+                            continue
+
                         if self._in_quickmenu:
                             if action == "prev":
                                 self.quickmenu.prev_item()
@@ -415,8 +424,12 @@ class LCDGlance:
                     self.rgb.busy = busy
                     self.rgb.update(st, self.scene.current_page.name)
 
-                # Push event cards for notable events (full-panel, brief)
-                if ev and (now - ev["ts"]) < 2.0:
+                # Push event cards for notable events (full-panel, brief).
+                # Dedupe on the event timestamp: pushing once per loop
+                # iteration kept re-arming _until and the card overstayed.
+                if ev and (now - ev["ts"]) < 2.0 \
+                        and ev["ts"] != self._last_event_card_ts:
+                    self._last_event_card_ts = ev["ts"]
                     label = ev.get("label", "")
                     if ev["kind"] == "ok":
                         self.eventcard.push("ok", label or "TASK COMPLETE",
@@ -522,12 +535,18 @@ class LCDGlance:
                 # Deadline-based sleep: wake for next input poll or render,
                 # whichever is sooner. Input always runs at 50 Hz minimum.
                 next_input = now + INPUT_INTERVAL
-                next_render = self._last_render + interval if fps > 0 else now + 1.0
+                # _last_render is 0 until the first frame is submitted (no
+                # LCD yet), so base the deadline on now in that case: the
+                # old form produced a deadline in the past and spun the loop.
+                next_render = ((self._last_render + interval)
+                               if (self._last_render and fps > 0)
+                               else now + 1.0)
                 next_event = min(next_input, next_render)
                 sleep_until = max(next_event, now + MIN_SLEEP)
-                delay = sleep_until - time.time()
-                if delay > MIN_SLEEP:
-                    time.sleep(delay)
+                # Cap the sleep at 1 s so a wall-clock jump (NTP/DST) degrades
+                # into one slow frame instead of a stall.
+                delay = max(MIN_SLEEP, min(1.0, sleep_until - time.time()))
+                time.sleep(delay)
             except Exception:
                 traceback.print_exc()
                 time.sleep(1.0)

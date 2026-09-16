@@ -9,6 +9,101 @@ from ..util.constants import VPS_CONFIG_FILE, CREATE_NO_WINDOW
 from ..supervisor import ConnectionSupervisor
 
 
+# ─── remote probe ───────────────────────────────────────────────────
+# The section order is a contract with parse_remote_output(): every index
+# below is positional, and reading the wrong one is silent (RAM stuck at
+# 0 %, uptime showing the disk line).
+REMOTE_PROBE = (
+    "cat /proc/loadavg; echo '---'; "      # 0
+    "nproc; echo '---'; "                  # 1
+    "free -m | head -2; echo '---'; "      # 2
+    "df -h / | tail -1; echo '---'; "      # 3
+    "cat /proc/uptime; echo '---'; "       # 4
+    "ps -eo %cpu,%mem,comm --sort=-%cpu | head -4"   # 5
+)
+
+
+def parse_remote_output(out, fallback_cores=None):
+    """Parse REMOTE_PROBE output into a metrics dict.
+
+    Sections: 0 loadavg | 1 nproc | 2 free -m | 3 df -h | 4 /proc/uptime | 5 ps
+    """
+    sections = out.split("---")
+
+    def sec(i):
+        return sections[i] if len(sections) > i else ""
+
+    # 0 — load average
+    load1 = 0.0
+    parts = sec(0).strip().split()
+    if parts:
+        try:
+            load1 = float(parts[0])
+        except ValueError:
+            load1 = 0.0
+
+    # 1 — remote core count, then CPU % from load1 / cores
+    cores = max(1, fallback_cores or os.cpu_count() or 1)
+    try:
+        cores = max(1, int(sec(1).strip()))
+    except ValueError:
+        pass
+    cpu = min(100.0, load1 * 100.0 / max(cores, 1))
+
+    # 2 — free -m: "Mem:  total  used  free ..."
+    ram = 0.0
+    for line in sec(2).strip().splitlines():
+        if line.startswith("Mem:"):
+            f = line.split()
+            if len(f) >= 3:
+                try:
+                    total, used = int(f[1]), int(f[2])
+                    ram = (used / total * 100) if total else 0.0
+                except (ValueError, IndexError):
+                    pass
+            break
+
+    # 3 — df -h / : Use% is the 5th field
+    disk = 0.0
+    f = sec(3).strip().split()
+    if len(f) >= 5:
+        try:
+            disk = float(f[4].rstrip("%"))
+        except ValueError:
+            pass
+
+    # 4 — /proc/uptime
+    uptime_str = ""
+    f = sec(4).strip().split()
+    if f:
+        try:
+            up_s = float(f[0])
+            d = int(up_s) // 86400
+            h = (int(up_s) % 86400) // 3600
+            mnt = (int(up_s) % 3600) // 60
+            if d > 0:
+                uptime_str = f"{d}d{h}h"
+            elif h > 0:
+                uptime_str = f"{h}h{mnt:02d}m"
+            else:
+                uptime_str = f"{mnt}m"
+        except ValueError:
+            uptime_str = sec(4).strip()[:12]
+
+    # 5 — ps, skipping the header row
+    top_procs = []
+    for line in sec(5).strip().splitlines()[1:]:
+        f = line.strip().split()
+        if len(f) >= 3:
+            try:
+                top_procs.append((f[2].split("/")[-1][:14], float(f[0])))
+            except (ValueError, IndexError):
+                pass
+
+    return {"cpu": cpu, "ram": ram, "disk": disk, "uptime": uptime_str,
+            "cores": cores, "load1": load1, "top_procs": top_procs[:3]}
+
+
 class VPSMonitor:
     """Polls a remote VPS via SSH for CPU, RAM, disk, uptime and top processes.
 
@@ -64,106 +159,26 @@ class VPSMonitor:
             if now - self._last_poll < self.retry_interval:
                 return
         cmd = self._ssh_cmd()
-        remote = (
-            "cat /proc/loadavg; echo '---'; "
-            "nproc; echo '---'; "
-            "free -m | head -2; echo '---'; "
-            "df -h / | tail -1; echo '---'; "
-            "cat /proc/uptime; echo '---'; "
-            "ps -eo %cpu,%mem,comm --sort=-%cpu | head -4"
-        )
         start = time.monotonic()
         try:
-            r = subprocess.run(cmd + [remote], capture_output=True, timeout=self.timeout + 3,
+            r = subprocess.run(cmd + [REMOTE_PROBE], capture_output=True,
+                               timeout=self.timeout + 3,
                                creationflags=CREATE_NO_WINDOW)
             if r.returncode != 0:
                 raise RuntimeError(f"ssh exit {r.returncode}")
             out = r.stdout.decode("utf-8", errors="replace")
-            sections = out.split("---")
             now = time.time()
             elapsed = time.monotonic() - start
-
-            # Section 0: loadavg
-            cpu = 0.0
-            vps_cores = 1   # fallback
-            if len(sections) > 0:
-                parts = sections[0].strip().split()
-                if len(parts) >= 1:
-                    try:
-                        load1 = float(parts[0])
-                    except ValueError:
-                        load1 = 0.0
-
-            # Section 1: nproc (remote CPU cores)
-            if len(sections) > 1:
-                try:
-                    vps_cores = max(1, int(sections[1].strip()))
-                except ValueError:
-                    vps_cores = os.cpu_count() or 1
-                cpu = min(100.0, load1 * 100.0 / max(vps_cores, 1))
-
-            ram = 0.0
-            if len(sections) > 2:
-                for line in sections[1].strip().splitlines():
-                    if line.startswith("Mem:"):
-                        parts = line.split()
-                        if len(parts) >= 3:
-                            try:
-                                used = int(parts[2])
-                                total = int(parts[1])
-                                ram = (used / total * 100) if total else 0.0
-                            except (ValueError, IndexError):
-                                pass
-                        break
-
-            disk = 0.0
-            if len(sections) > 3:
-                parts = sections[3].strip().split()
-                if len(parts) >= 5:
-                    try:
-                        disk = float(parts[4].rstrip("%"))
-                    except ValueError:
-                        pass
-
-            uptime_str = ""
-            if len(sections) > 4:
-                parts = sections[3].strip().split()
-                if parts:
-                    try:
-                        up_s = float(parts[0])
-                        d = int(up_s) // 86400
-                        h = (int(up_s) % 86400) // 3600
-                        m = (int(up_s) % 3600) // 60
-                        if d > 0:
-                            uptime_str = f"{d}d{h}h"
-                        elif h > 0:
-                            uptime_str = f"{h}h{m:02d}m"
-                        else:
-                            uptime_str = f"{m}m"
-                    except ValueError:
-                        uptime_str = sections[3].strip()[:12]
-
-            top_procs = []
-            if len(sections) > 5:
-                for line in sections[5].strip().splitlines()[1:]:
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        try:
-                            cpu_p = float(parts[0])   # %cpu (now correct column)
-                            name = parts[2].split("/")[-1][:14]
-                            top_procs.append((name, cpu_p))
-                        except (ValueError, IndexError):
-                            pass
-                top_procs = top_procs[:3]
+            m = parse_remote_output(out, fallback_cores=os.cpu_count())
 
             with self._lock:
                 self.sup.mark_online(latency=elapsed)
                 self.online = self.sup.is_online
-                self.cpu = cpu
-                self.ram = ram
-                self.disk = disk
-                self.uptime = uptime_str
-                self.top_procs = top_procs
+                self.cpu = m["cpu"]
+                self.ram = m["ram"]
+                self.disk = m["disk"]
+                self.uptime = m["uptime"]
+                self.top_procs = m["top_procs"]
                 self._fail_count = 0
                 self._last_poll = now
 
