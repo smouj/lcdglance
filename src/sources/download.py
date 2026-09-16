@@ -22,7 +22,7 @@ from ..util.constants import (
 class DownloadDetector:
     def __init__(self):
         self.active = False
-        self.state = self.IDLE
+        self.state = "idle"
         self.name = ""
         self.speed = 0.0
         self.peak = 0.0
